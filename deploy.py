@@ -407,12 +407,19 @@ class SSHManager:
         self.passphrase = passphrase
         self.password = password
         self.client = None
-        self.sftp = None
+        self._created_dirs = set()
 
     def connect(self):
         if not paramiko:
             log_error("Paramiko is required for SSH connections. Please run: pip install paramiko")
             sys.exit(1)
+
+        # Close existing client cleanly if any
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
 
         log_info(f"Connecting to VPS ({self.user}@{self.host}:{self.port}) via SSH...")
         client = paramiko.SSHClient()
@@ -422,7 +429,9 @@ class SSHManager:
             "hostname": self.host,
             "port": self.port,
             "username": self.user,
-            "timeout": 20
+            "timeout": 30,
+            "banner_timeout": 60,
+            "auth_timeout": 60
         }
 
         if self.key_path:
@@ -434,14 +443,13 @@ class SSHManager:
                 connect_kwargs["passphrase"] = self.passphrase
         elif self.password:
             connect_kwargs["password"] = self.password
-        else:
-            # Paramiko will look into default ssh-agent or ~/.ssh keys
-            pass
 
         try:
             client.connect(**connect_kwargs)
+            transport = client.get_transport()
+            if transport:
+                transport.set_keepalive(15)
             self.client = client
-            self.sftp = client.open_sftp()
             log_success(f"SSH Connection established to {self.host}")
             return self
         except Exception as e:
@@ -449,25 +457,21 @@ class SSHManager:
             sys.exit(1)
 
     def close(self):
-        if self.sftp:
-            try:
-                self.sftp.close()
-            except Exception:
-                pass
         if self.client:
             try:
                 self.client.close()
             except Exception:
                 pass
+            self.client = None
         log_info(f"SSH connection to {self.host} closed.")
 
-    def run_cmd(self, cmd, cwd=None, retries=2):
+    def run_cmd(self, cmd, cwd=None, retries=3):
         full_cmd = f"cd '{cwd}' && {cmd}" if cwd else cmd
         log_cmd(full_cmd, kind="VPS SSH")
 
         for attempt in range(1, retries + 1):
             try:
-                transport = self.client.get_transport()
+                transport = self.client.get_transport() if self.client else None
                 if not transport or not transport.is_active():
                     log_warning(f"SSH connection inactive. Reconnecting (Attempt {attempt}/{retries})...")
                     self.connect()
@@ -494,16 +498,29 @@ class SSHManager:
                 if attempt == retries:
                     log_error(f"Remote command failed after {retries} attempts.")
                     sys.exit(1)
+                import time
+                time.sleep(2)
 
     def mkdir_p(self, remote_dir):
-        """Creates directory hierarchy on remote machine via SSH."""
+        """Creates directory hierarchy on remote machine via SSH safely."""
         remote_dir_norm = remote_dir.replace("\\", "/")
+        if remote_dir_norm in self._created_dirs:
+            return
         try:
-            self.client.exec_command(f"mkdir -p '{remote_dir_norm}'")
+            transport = self.client.get_transport() if self.client else None
+            if not transport or not transport.is_active():
+                self.connect()
+
+            stdin, stdout, stderr = self.client.exec_command(f"mkdir -p '{remote_dir_norm}'")
+            stdout.channel.recv_exit_status()
+            stdout.read()
+            stderr.read()
+            self._created_dirs.add(remote_dir_norm)
         except Exception:
             pass
 
-    def upload_file(self, local_path, remote_path):
+    def upload_file(self, local_path, remote_path, retries=5):
+        import time
         remote_path = remote_path.replace("\\", "/")
         parent_dir = os.path.dirname(remote_path)
         if parent_dir:
@@ -511,17 +528,56 @@ class SSHManager:
 
         base_name = os.path.basename(local_path)
 
-        def progress(transferred, total):
-            if total > 0:
-                percent = (transferred / total) * 100
-                mb_trans = transferred / (1024 * 1024)
-                mb_tot = total / (1024 * 1024)
-                sys.stdout.write(f"\r  {Fore.CYAN}📤 [{base_name}] {mb_trans:.1f} MB / {mb_tot:.1f} MB ({percent:.1f}%){Style.RESET_ALL}  ")
-                sys.stdout.flush()
+        for attempt in range(1, retries + 1):
+            sftp = None
+            try:
+                transport = self.client.get_transport() if self.client else None
+                if not transport or not transport.is_active():
+                    log_warning(f"SSH connection inactive. Reconnecting (Attempt {attempt}/{retries})...")
+                    self.connect()
 
-        print(f"  {Fore.LIGHTBLUE_EX}⇗ Uploading file:{Style.RESET_ALL} {local_path} -> {remote_path}")
-        self.sftp.put(local_path, remote_path, callback=progress)
-        sys.stdout.write("\n")
+                sftp = self.client.open_sftp()
+
+                def progress(transferred, total):
+                    if total > 0:
+                        percent = (transferred / total) * 100
+                        mb_trans = transferred / (1024 * 1024)
+                        mb_tot = total / (1024 * 1024)
+                        sys.stdout.write(f"\r  {Fore.CYAN}📤 [{base_name}] {mb_trans:.1f} MB / {mb_tot:.1f} MB ({percent:.1f}%){Style.RESET_ALL}  ")
+                        sys.stdout.flush()
+
+                if attempt == 1:
+                    print(f"  {Fore.LIGHTBLUE_EX}⇗ Uploading file:{Style.RESET_ALL} {local_path} -> {remote_path}")
+
+                sftp.put(local_path, remote_path, callback=progress, confirm=False)
+                sys.stdout.write("\n")
+                return True
+
+            except Exception as e:
+                sys.stdout.write("\n")
+                log_warning(f"SFTP upload failed on attempt {attempt}/{retries}: {e}")
+                if attempt == retries:
+                    log_error(f"SFTP upload failed permanently after {retries} attempts.")
+                    raise e
+                try:
+                    if sftp:
+                        sftp.close()
+                except Exception:
+                    pass
+                try:
+                    if self.client:
+                        self.client.close()
+                except Exception:
+                    pass
+                time.sleep(2)
+                self.connect()
+
+            finally:
+                if sftp:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
 
     def upload_directory(self, local_dir, remote_dir):
         remote_dir = remote_dir.replace("\\", "/")
@@ -723,6 +779,9 @@ def deploy_service(name, cfg, project_root, dry_run=False):
         ).connect()
 
     try:
+        # Ensure remote base directory exists
+        conn.mkdir_p(remote_base)
+
         # Pre-deploy commands / remote preparations
         before_steps = normalize_steps(cfg.get("before_deploy") or cfg.get("pre_deploy") or cfg.get("before_run"))
         if before_steps:
