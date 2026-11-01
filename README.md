@@ -1,34 +1,42 @@
-# 🚀 Universal Deployer
+# 🚀 uhdeploy - Universal Deployer CLI
 
 A modern, declarative, and color-rich deployment CLI tool for web applications, Docker containers, and static sites. Deploy seamlessly from your local machine to any Linux VPS or hosting server using **SSH/SFTP** or **FTP**.
 
 ---
 
+## 📦 Installation
+
+Install `uhdeploy` directly via pip:
+
+```bash
+pip install uhdeploy
+```
+
+Or install from source for development:
+
+```bash
+git clone https://github.com/AbdullahAhmad-0/Universal-Deployer.git
+cd Universal-Deployer
+pip install -e .
+```
+
+---
+
 ## ✨ Features
 
+- **Global CLI Command**: Run `uhdeploy` anywhere in your terminal.
 - **YAML + Dockerfile-Style Syntax**: Configure complex builds and deployments using intuitive directives like `RUN`, `COPY`, `CMD`, `WORKDIR`, and `ENV`.
-- **Interactive File Discovery**: If `deploy.yml` is not found in the current folder, the script prompts you to enter your project directory or file path automatically.
+- **Interactive File Discovery**: If `deploy.yml` is not found in the current folder, `uhdeploy` prompts you to enter your project directory or file path automatically.
 - **Dual Protocol Support**:
   - **SSH / SFTP**: Full remote terminal execution (`paramiko`), automated directory sync, and Docker container orchestration.
   - **FTP**: Built-in FTP transfer (`ftplib`) for static/shared hosting environments (with graceful warnings for unsupported remote commands).
 - **Flexible Docker Workflows**:
   - **Local Build & Tar Transfer (Default)**: Builds the Docker image locally, exports it to a `.tar` archive, transfers it via SFTP, and loads it into the remote Docker daemon. This saves RAM and CPU on low-spec VPS servers!
   - **Remote Build**: Syncs files and triggers `docker compose build` directly on the VPS.
+  - **Auto Environment Sync**: Automatically detects and syncs environment files (e.g. `.env.production`) referenced in your `docker-compose.yml`.
 - **Traditional (No Docker) Deployments**: Perfect for static frontends (React, Vue, Next.js static exports, Vite) or traditional Node/Python/PHP apps with local builds and Nginx reloading.
 - **Dynamic Variable Substitution**: Seamlessly interpolate `${VPS_IP}`, `${SSH_KEY_PATH}`, or custom environment variables from `.env` or `.env.deploy` files.
 - **Rich Terminal UI**: Full ANSI color formatting with `colorama`, interactive numbered selection menus, step badges (`[Docker]`, `[SSH]`, `[FTP]`), and upload progress bars.
-
----
-
-## 📦 Installation & Requirements
-
-Ensure you have Python 3.9+ installed. Install the required dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-*(Note: If you only use FTP deployments, `paramiko` is optional!)*
 
 ---
 
@@ -38,13 +46,13 @@ pip install -r requirements.txt
 Generate a starter `deploy.yml` file in your project directory:
 
 ```bash
-python deploy.py --init
+uhdeploy --init
 ```
 
 Or view a commented example in your terminal:
 
 ```bash
-python deploy.py --example
+uhdeploy --example
 ```
 
 ### 2. Configure Environment Variables (`.env`)
@@ -65,14 +73,16 @@ Launch the deployer:
 
 ```bash
 # Interactive service selection menu
-python deploy.py
+uhdeploy
 
 # Or deploy a specific service directly
-python deploy.py frontend
+uhdeploy frontend
 
 # Or deploy all services in order
-python deploy.py all
+uhdeploy all
 ```
+
+*(You can also run it via `python -m uhdeploy` or `python deploy.py`)*
 
 ---
 
@@ -136,7 +146,7 @@ services:
     docker:
       enabled: true
       compose_file: docker-compose.yml # Compose file (defaults to docker-compose.yml)
-      # env_file: .env.production      # (Optional: auto-detected from compose file)
+      # (Optional: .env.production referenced in compose is auto-synced!)
       service_name: backend            # Name of service inside docker-compose.yml
       build_mode: local                # "local" (build tarball & upload) or "remote"
       image: my-backend:latest
@@ -189,7 +199,8 @@ Within `build`, `before_deploy`, and `run_in_vps`, you can write steps as clean 
 
 ```
 Usage:
-  python deploy.py [OPTIONS] [SERVICE_NAME]
+  uhdeploy [OPTIONS] [SERVICE_NAME]
+  (or python -m uhdeploy [OPTIONS] [SERVICE_NAME])
 
 Options:
   -h, --help               Show full colorful help screen and exit.
@@ -206,18 +217,48 @@ Options:
 
 ```bash
 # Preview build and deployment steps without making server changes:
-python deploy.py backend --dry-run
+uhdeploy backend --dry-run
 
 # List configured services in a custom deploy file:
-python deploy.py -f ./custom-deploy.yml --list
+uhdeploy -f ./custom-deploy.yml --list
 
 # Deploy a specific service from an external project directory:
-python deploy.py -p D:/Projects/my-app frontend
+uhdeploy -p D:/Projects/my-app frontend
+```
+
+---
+
+## 🚢 Publishing to PyPI
+
+To build and publish `uhdeploy` to PyPI:
+
+1. **Install build tools**:
+   ```bash
+   pip install --upgrade build twine
+   ```
+
+2. **Build distribution packages (tar.gz and .whl)**:
+   ```bash
+   python -m build
+   ```
+
+3. **Check distribution packages**:
+   ```bash
+   twine check dist/*
+   ```
+
+4. **Upload to PyPI**:
+   ```bash
+   twine upload dist/*
+   ```
+
+Once published, anyone can install your package with:
+```bash
+pip install uhdeploy
 ```
 
 ---
 
 ## 📄 License
 
-MIT License. Feel free to customize and extend for your deployment pipelines!
-
+MIT License. Created by Abdullah Ahmad. Feel free to customize and extend for your deployment pipelines!
