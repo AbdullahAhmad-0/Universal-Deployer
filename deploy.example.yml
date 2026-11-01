@@ -70,6 +70,9 @@ services:
       enabled: true
       # Compose file path (relative to project root, defaults to docker-compose.yml)
       compose_file: docker-compose.yml
+      # (Optional) env files referenced in docker-compose are auto-detected and synced,
+      # or specify explicitly:
+      # env_file: .env.production
       service_name: backend
       # Build mode:
       # - "local": Builds docker image locally, packages as tar, uploads to VPS,

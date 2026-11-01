@@ -830,6 +830,69 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                 log_info(f"Syncing docker-compose file: {compose_rel} -> {remote_base}/docker-compose.yml")
                 conn.upload_file(compose_path, f"{remote_base}/docker-compose.yml")
 
+                # Auto-detect and sync referenced env_file(s) from docker-compose.yml or config
+                compose_dir = os.path.dirname(compose_path) or project_root
+                env_files_to_sync = set()
+
+                # Explicit env files from deploy.yml
+                explicit_envs = d_dict.get("env_file") or d_dict.get("env_files") or []
+                if isinstance(explicit_envs, str):
+                    explicit_envs = [explicit_envs]
+                for ee in explicit_envs:
+                    env_files_to_sync.add(ee)
+
+                # Auto-parse from docker-compose.yml
+                try:
+                    with open(compose_path, "r", encoding="utf-8", errors="replace") as cf:
+                        compose_data = yaml.safe_load(cf) or {}
+                    if isinstance(compose_data, dict):
+                        services_dict = compose_data.get("services", {})
+                        if isinstance(services_dict, dict):
+                            for _, s_def in services_dict.items():
+                                if isinstance(s_def, dict) and "env_file" in s_def:
+                                    ef = s_def["env_file"]
+                                    if isinstance(ef, str):
+                                        env_files_to_sync.add(ef)
+                                    elif isinstance(ef, list):
+                                        for item in ef:
+                                            if isinstance(item, str):
+                                                env_files_to_sync.add(item)
+                                            elif isinstance(item, dict) and "path" in item:
+                                                env_files_to_sync.add(item["path"])
+                except Exception as e:
+                    log_warning(f"Could not parse docker-compose.yml for env_files: {e}")
+
+                # Sync compose dir root .env if it exists and not yet added
+                root_env = os.path.join(compose_dir, ".env")
+                if os.path.isfile(root_env) and not explicit_envs:
+                    env_files_to_sync.add(".env")
+
+                # Upload all discovered env files
+                for ef in sorted(env_files_to_sync):
+                    clean_ef = ef.replace("\\", "/").strip("/")
+                    # Handle paths that start with ./
+                    search_rel = clean_ef[2:] if clean_ef.startswith("./") else clean_ef
+
+                    candidate_paths = [
+                        os.path.join(compose_dir, search_rel),
+                        os.path.join(project_root, search_rel),
+                        os.path.join(work_dir, search_rel),
+                        os.path.join(compose_dir, os.path.basename(search_rel)),
+                        os.path.join(project_root, os.path.basename(search_rel))
+                    ]
+                    found_local = None
+                    for cp in candidate_paths:
+                        if os.path.isfile(cp):
+                            found_local = cp
+                            break
+
+                    if found_local:
+                        remote_env_dest = f"{remote_base}/{search_rel}".replace("\\", "/")
+                        log_info(f"Syncing compose env file: {search_rel} -> {remote_env_dest}")
+                        conn.upload_file(found_local, remote_env_dest)
+                    else:
+                        log_warning(f"Environment file '{ef}' referenced by docker-compose was not found locally.")
+
             if build_mode == "local":
                 # Build locally, package as tarball, transfer, load into remote Docker
                 tar_name = f"{service_name}.tar"
@@ -984,6 +1047,7 @@ services:
     docker:
       enabled: true
       compose_file: docker-compose.yml
+      # env_file: .env.production # (Optional: auto-detected from docker-compose.yml!)
       service_name: backend
       build_mode: local        # "local" (tarball upload) or "remote" (build on VPS)
       image: my-backend:latest

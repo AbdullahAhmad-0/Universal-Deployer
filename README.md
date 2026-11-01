@@ -136,6 +136,7 @@ services:
     docker:
       enabled: true
       compose_file: docker-compose.yml # Compose file (defaults to docker-compose.yml)
+      # env_file: .env.production      # (Optional: auto-detected from compose file)
       service_name: backend            # Name of service inside docker-compose.yml
       build_mode: local                # "local" (build tarball & upload) or "remote"
       image: my-backend:latest
