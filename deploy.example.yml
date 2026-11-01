@@ -1,0 +1,110 @@
+# deploy.example.yml
+# =============================================================================
+# 🚀 Universal Deployer Configuration Example (deploy.yml)
+# =============================================================================
+# This file defines how your application services are built, uploaded, and run
+# on your VPS server via SSH or FTP.
+#
+# Environment variables like ${VPS_IP} or ${SSH_KEY_PATH} are automatically
+# loaded from .env or .env.deploy in your project root!
+# =============================================================================
+
+# (Optional) Global connection settings inherited by all services
+server:
+  type: ssh                    # Protocol: "ssh" (SFTP + Shell) or "ftp" (File transfer only)
+  host: ${VPS_IP}              # VPS IP address or domain (or set hardcoded)
+  user: ${VPS_USER:-root}      # SSH/FTP Username (defaults to root)
+  port: 22                     # Port: 22 for SSH, 21 for FTP
+  key_path: ${SSH_KEY_PATH}    # Path to private key file (e.g., ~/.ssh/id_rsa or C:/keys/vps.pem)
+  passphrase: ${SSH_PASSPHRASE}# (Optional) Passphrase if your private key is encrypted
+  password: ${VPS_PASSWORD}    # (Optional) SSH or FTP password if not using key
+  remote_dir: /opt/my-project  # Remote base directory on the VPS
+
+# (Optional) Specify custom env file to load (default: .env or .env.deploy)
+env_file: .env
+
+# =============================================================================
+# SERVICES DEFINITION
+# =============================================================================
+services:
+
+  # ---------------------------------------------------------------------------
+  # 🌐 Service 1: Frontend (Static / SPA / Next.js / Vue / React) - NO DOCKER
+  # ---------------------------------------------------------------------------
+  frontend:
+    description: "React/Next.js frontend build & static sync"
+    docker: false              # Disable docker for this service
+
+    # Local working directory (relative to project root)
+    work_dir: ./frontend
+
+    # Build steps (Dockerfile-style string syntax or list of commands)
+    build:
+      - RUN npm install
+      - RUN npm run build
+      - COPY package.json dist/package.json
+      # You can run any local build or packaging commands here:
+      # - RUN echo "Frontend build finished"
+
+    # Upload files or directories to the VPS
+    # Format: "local_path -> remote_path" or specify as list
+    upload:
+      - dist/ -> ${remote_dir}/frontend/dist
+      - public/ -> ${remote_dir}/frontend/public
+
+    # Commands to execute on the remote VPS after upload (SSH ONLY)
+    # NOTE: If server type is FTP, remote shell execution is NOT supported.
+    run_in_vps:
+      - RUN systemctl reload nginx
+      - RUN echo "✅ Frontend updated and Nginx reloaded!"
+
+  # ---------------------------------------------------------------------------
+  # 🐳 Service 2: Backend (FastAPI / Node / Python) - WITH DOCKER
+  # ---------------------------------------------------------------------------
+  backend:
+    description: "Backend API running in Docker Compose"
+    work_dir: ./backend
+
+    # Docker configuration
+    docker:
+      enabled: true
+      # Compose file path (relative to project root, defaults to docker-compose.yml)
+      compose_file: docker-compose.yml
+      service_name: backend
+      # Build mode:
+      # - "local": Builds docker image locally, packages as tar, uploads to VPS,
+      #            and loads it on VPS (saves VPS CPU and memory).
+      # - "remote": Uploads context and builds directly on the VPS.
+      build_mode: local
+      image: my-backend:latest
+      context: ./backend
+      dockerfile: ./backend/Dockerfile
+
+    # Commands to run on VPS BEFORE docker run / load
+    before_deploy:
+      - RUN mkdir -p ${remote_dir}/backend/logs
+      - RUN mkdir -p ${remote_dir}/backend/data
+      - COPY ./backend/.env.production -> ${remote_dir}/backend/.env
+
+    # Commands to run on VPS AFTER docker load / deploy
+    run_in_vps:
+      - RUN docker compose up -d backend
+      - RUN docker compose ps backend
+      - RUN echo "✅ Backend service is up and running!"
+
+  # ---------------------------------------------------------------------------
+  # 📁 Service 3: Legacy or Shared Hosting via FTP (File Transfer Only)
+  # ---------------------------------------------------------------------------
+  ftp_site:
+    description: "Static website deployment over plain FTP"
+    docker: false
+    server:
+      type: ftp                # Use FTP protocol
+      host: ${FTP_HOST}
+      user: ${FTP_USER}
+      password: ${FTP_PASS}
+      port: 21
+      remote_dir: /public_html
+    upload:
+      - dist/ -> /public_html
+

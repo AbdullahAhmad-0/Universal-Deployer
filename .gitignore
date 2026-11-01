@@ -1,0 +1,28 @@
+# Environment & secret files
+.env
+.env.*
+!.env.example
+deploy.yml
+deploy.yaml
+
+# Tarballs & build artifacts
+*.tar
+*.tar.gz
+dist/
+build/
+
+# Python cache & virtual environments
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+ENV/
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+*.pem
+*.key
+id_rsa*
+
