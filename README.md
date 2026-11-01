@@ -146,12 +146,12 @@ services:
     # Remote steps executed on VPS BEFORE starting Docker:
     before_deploy:
       - RUN mkdir -p ${remote_dir}/backend/data
-      - COPY ./backend/.env.production -> ${remote_dir}/backend/.env
 
     # Remote steps executed on VPS AFTER starting Docker:
+    # (Note: 'docker compose up -d <service>' is already executed automatically!)
     run_in_vps:
-      - RUN docker compose up -d backend
       - RUN docker compose ps
+      - RUN docker compose logs --tail=25 backend
 ```
 
 ---

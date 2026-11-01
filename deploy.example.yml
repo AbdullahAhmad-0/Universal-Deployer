@@ -70,10 +70,14 @@ services:
       enabled: true
       # Compose file path (relative to project root, defaults to docker-compose.yml)
       compose_file: docker-compose.yml
-      # (Optional) env files referenced in docker-compose are auto-detected and synced,
-      # or specify explicitly:
-      # env_file: .env.production
+      # Compose service name (must match service key defined in docker-compose.yml)
       service_name: backend
+      # (Optional) Environment files:
+      # Any env_file referenced in docker-compose.yml (e.g. .env.production)
+      # is automatically detected and synced to the VPS!
+      # Or you can explicitly list them here:
+      # env_file: .env.production
+      #
       # Build mode:
       # - "local": Builds docker image locally, packages as tar, uploads to VPS,
       #            and loads it on VPS (saves VPS CPU and memory).
@@ -83,16 +87,20 @@ services:
       context: ./backend
       dockerfile: ./backend/Dockerfile
 
-    # Commands to run on VPS BEFORE docker run / load
+    # Commands to run on VPS BEFORE docker starts
     before_deploy:
       - RUN mkdir -p ${remote_dir}/backend/logs
       - RUN mkdir -p ${remote_dir}/backend/data
-      - COPY ./backend/.env.production -> ${remote_dir}/backend/.env
+      # (Optional) Manual file copy if not auto-synced:
+      # - COPY ./backend/.env.production -> ${remote_dir}/backend/.env
 
-    # Commands to run on VPS AFTER docker load / deploy
+    # Commands to run on VPS AFTER docker starts
+    # NOTE: The deployer ALREADY starts your container automatically via
+    # `docker compose up -d <service_name>`.
+    # Use run_in_vps for migrations, status checks, or viewing logs!
     run_in_vps:
-      - RUN docker compose up -d backend
-      - RUN docker compose ps backend
+      - RUN docker compose ps
+      - RUN docker compose logs --tail=25 backend
       - RUN echo "✅ Backend service is up and running!"
 
   # ---------------------------------------------------------------------------
@@ -110,4 +118,3 @@ services:
       remote_dir: /public_html
     upload:
       - dist/ -> /public_html
-

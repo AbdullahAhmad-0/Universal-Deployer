@@ -1056,12 +1056,12 @@ services:
     # Run on VPS before docker starts:
     before_deploy:
       - RUN mkdir -p ${remote_dir}/backend/data
-      - COPY ./backend/.env.production -> ${remote_dir}/backend/.env
 
     # Run on VPS after deployment:
+    # (Note: 'docker compose up -d <service>' is already executed automatically!)
     run_in_vps:
-      - RUN docker compose up -d backend
       - RUN docker compose ps
+      - RUN docker compose logs --tail=25 backend
 """
 
 def print_help_screen():
