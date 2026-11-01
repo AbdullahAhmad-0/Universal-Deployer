@@ -61,7 +61,7 @@ except ImportError:
 def banner():
     lines = [
         f"{Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════╗",
-        f"║ {Fore.CYAN}{Style.BRIGHT}🚀  U N I V E R S A L   D E P L O Y E R                                  {Style.NORMAL}{Fore.CYAN}║",
+        f"║ {Fore.CYAN}{Style.BRIGHT}🚀  U N I V E R S A L   D E P L O Y E R                                   {Style.NORMAL}{Fore.CYAN}║",
         f"║ {Fore.YELLOW}Local-to-VPS Automated Deployment (SSH / SFTP / FTP / Docker)             {Fore.CYAN}║",
         f"╚═══════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}"
     ]
