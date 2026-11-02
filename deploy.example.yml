@@ -52,6 +52,9 @@ services:
       - dist/ -> ${remote_dir}/frontend/dist
       - public/ -> ${remote_dir}/frontend/public
 
+    # (Optional) Wipe remote destination directory before uploading:
+    # clean_remote: true
+
     # Commands to execute on the remote VPS after upload (SSH ONLY)
     # NOTE: If server type is FTP, remote shell execution is NOT supported.
     run_in_vps:
@@ -109,6 +112,7 @@ services:
   ftp_site:
     description: "Static website deployment over plain FTP"
     docker: false
+    work_dir: ./Backend
     server:
       type: ftp                # Use FTP protocol
       host: ${FTP_HOST}
@@ -117,4 +121,11 @@ services:
       port: 21
       remote_dir: /public_html
     upload:
-      - dist/ -> /public_html
+      - . -> /public_html
+    # (Optional) Ignore patterns:
+    ignore:
+      - node_modules
+      - .venv
+      - __pycache__
+      - .git
+      - "*.log"

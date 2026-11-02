@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import argparse
 import ftplib
+import fnmatch
 from pathlib import Path
 
 # Ensure UTF-8 output encoding for consoles (especially Windows)
@@ -395,6 +396,44 @@ def normalize_steps(step_list):
 
 
 # =============================================================================
+# 🚫 FILE & DIRECTORY IGNORE PATTERNS
+# =============================================================================
+
+DEFAULT_IGNORES = [
+    ".git",
+    ".gitignore",
+    ".gitattributes",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".DS_Store",
+    "Thumbs.db",
+    ".vscode",
+    ".idea"
+]
+
+def is_ignored(name, rel_path, ignore_patterns):
+    if not ignore_patterns:
+        return False
+    norm_name = name.rstrip("/").rstrip("\\")
+    norm_rel = rel_path.replace("\\", "/").strip("/")
+
+    for pat in ignore_patterns:
+        pat_clean = pat.strip().replace("\\", "/").rstrip("/")
+        if not pat_clean or pat_clean.startswith("#"):
+            continue
+        # Direct basename match (e.g., "node_modules", ".env.local", "*.pyc")
+        if fnmatch.fnmatch(norm_name, pat_clean):
+            return True
+        # Relative path match (e.g., "dist/*", "logs/*.log")
+        if fnmatch.fnmatch(norm_rel, pat_clean) or fnmatch.fnmatch(norm_rel, f"*/{pat_clean}"):
+            return True
+        if fnmatch.fnmatch(norm_rel, f"{pat_clean}/*") or fnmatch.fnmatch(norm_rel, f"*/{pat_clean}/*"):
+            return True
+    return False
+
+
+# =============================================================================
 # 🔐 SSH & SFTP CLIENT HANDLER
 # =============================================================================
 
@@ -579,17 +618,30 @@ class SSHManager:
                     except Exception:
                         pass
 
-    def upload_directory(self, local_dir, remote_dir):
+    def upload_directory(self, local_dir, remote_dir, ignore_patterns=None):
         remote_dir = remote_dir.replace("\\", "/")
         self.mkdir_p(remote_dir)
 
+        patterns = list(DEFAULT_IGNORES)
+        if ignore_patterns:
+            patterns.extend(ignore_patterns)
+
         print(f"  {Fore.LIGHTBLUE_EX}⇗ Syncing directory:{Style.RESET_ALL} {local_dir} -> {remote_dir}")
         for root, dirs, files in os.walk(local_dir):
-            rel_path = os.path.relpath(root, local_dir)
-            target_sub = remote_dir if rel_path == "." else f"{remote_dir}/{rel_path}".replace("\\", "/")
+            rel_dir = os.path.relpath(root, local_dir)
+            # Prune directory search so os.walk does not traverse ignored folders (e.g. node_modules, .venv)
+            dirs[:] = [
+                d for d in dirs
+                if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
+            ]
+
+            target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}".replace("\\", "/")
             self.mkdir_p(target_sub)
 
             for f in files:
+                rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
+                if is_ignored(f, rel_file, patterns):
+                    continue
                 l_file = os.path.join(root, f)
                 r_file = f"{target_sub}/{f}".replace("\\", "/")
                 self.upload_file(l_file, r_file)
@@ -661,17 +713,29 @@ class FTPManager:
         with open(local_path, "rb") as f:
             self.ftp.storbinary(f"STOR {remote_path}", f)
 
-    def upload_directory(self, local_dir, remote_dir):
+    def upload_directory(self, local_dir, remote_dir, ignore_patterns=None):
         remote_dir = remote_dir.replace("\\", "/")
         self.mkdir_p(remote_dir)
 
+        patterns = list(DEFAULT_IGNORES)
+        if ignore_patterns:
+            patterns.extend(ignore_patterns)
+
         print(f"  {Fore.LIGHTBLUE_EX}⇗ [FTP] Syncing directory:{Style.RESET_ALL} {local_dir} -> {remote_dir}")
         for root, dirs, files in os.walk(local_dir):
-            rel_path = os.path.relpath(root, local_dir)
-            target_sub = remote_dir if rel_path == "." else f"{remote_dir}/{rel_path}".replace("\\", "/")
+            rel_dir = os.path.relpath(root, local_dir)
+            dirs[:] = [
+                d for d in dirs
+                if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
+            ]
+
+            target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}".replace("\\", "/")
             self.mkdir_p(target_sub)
 
             for f in files:
+                rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
+                if is_ignored(f, rel_file, patterns):
+                    continue
                 l_file = os.path.join(root, f)
                 r_file = f"{target_sub}/{f}".replace("\\", "/")
                 self.upload_file(l_file, r_file)
@@ -780,6 +844,27 @@ def deploy_service(name, cfg, project_root, dry_run=False):
         # Ensure remote base directory exists
         conn.mkdir_p(remote_base)
 
+        # Resolve ignore patterns
+        ignore_list = list(DEFAULT_IGNORES)
+        custom_ignores = cfg.get("ignore") or cfg.get("exclude") or []
+        if isinstance(custom_ignores, str):
+            custom_ignores = [custom_ignores]
+        ignore_list.extend(custom_ignores)
+
+        # Check for .deployignore in work_dir or project_root
+        for cand_dir in [work_dir, project_root]:
+            dep_ign = os.path.join(cand_dir, ".deployignore")
+            if os.path.isfile(dep_ign):
+                try:
+                    with open(dep_ign, "r", encoding="utf-8", errors="replace") as dif:
+                        for line in dif:
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                ignore_list.append(line)
+                except Exception:
+                    pass
+                break
+
         # Pre-deploy commands / remote preparations
         before_steps = normalize_steps(cfg.get("before_deploy") or cfg.get("pre_deploy") or cfg.get("before_run"))
         if before_steps:
@@ -795,7 +880,7 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                     if not remote_dst.startswith("/"):
                         remote_dst = f"{remote_base}/{remote_dst}".replace("\\", "/")
                     if os.path.isdir(local_src):
-                        conn.upload_directory(local_src, remote_dst)
+                        conn.upload_directory(local_src, remote_dst, ignore_patterns=ignore_list)
                     elif os.path.isfile(local_src):
                         conn.upload_file(local_src, remote_dst)
 
@@ -943,6 +1028,8 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                 else:
                     upload_list.append(f". -> {remote_base}")
 
+            clean_remote = cfg.get("clean_remote") is True or cfg.get("empty_remote") is True
+
             for up in upload_list:
                 src, dst = "", ""
                 if isinstance(up, dict):
@@ -958,9 +1045,14 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                 if not dst.startswith("/"):
                     dst = f"{remote_base}/{dst}".replace("\\", "/")
 
+                # If clean_remote is enabled, empty destination directory on VPS before upload
+                if clean_remote and proto == "ssh":
+                    log_info(f"Emptying remote destination before upload: {dst}")
+                    conn.run_cmd(f"rm -rf '{dst}'/* '{dst}'/.[!.]* 2>/dev/null || true")
+
                 local_full = os.path.join(work_dir, src) if not os.path.isabs(src) else src
                 if os.path.isdir(local_full):
-                    conn.upload_directory(local_full, dst)
+                    conn.upload_directory(local_full, dst, ignore_patterns=ignore_list)
                 elif os.path.isfile(local_full):
                     conn.upload_file(local_full, dst)
                 else:
@@ -981,7 +1073,7 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                     if not remote_dst.startswith("/"):
                         remote_dst = f"{remote_base}/{remote_dst}".replace("\\", "/")
                     if os.path.isdir(local_src):
-                        conn.upload_directory(local_src, remote_dst)
+                        conn.upload_directory(local_src, remote_dst, ignore_patterns=ignore_list)
                     elif os.path.isfile(local_src):
                         conn.upload_file(local_src, remote_dst)
 
@@ -1030,6 +1122,9 @@ services:
     upload:
       - dist/ -> ${remote_dir}/frontend/dist
 
+    # (Optional) Empty remote directory before uploading:
+    # clean_remote: true
+
     # Commands executed on remote VPS (SSH only):
     run_in_vps:
       - RUN systemctl reload nginx
@@ -1060,6 +1155,36 @@ services:
     run_in_vps:
       - RUN docker compose ps
       - RUN docker compose logs --tail=25 backend
+
+  # ---------------------------------------------------------------------------
+  # 📁 API / Worker (Direct Working Directory Upload with Ignore Rules)
+  # ---------------------------------------------------------------------------
+  api:
+    description: "Sync current working directory directly to VPS with ignore rules"
+    docker: false
+    work_dir: ./api
+
+    # Upload entire working directory (.) to remote VPS destination
+    upload:
+      - . -> ${remote_dir}/api
+
+    # Files and folders to ignore when uploading:
+    # (You can also put these into a .deployignore file!)
+    ignore:
+      - node_modules
+      - .venv
+      - venv
+      - __pycache__
+      - .git
+      - .env.local
+      - "*.log"
+      - "*.pyc"
+
+    # (Optional) Wipe destination directory before uploading:
+    # clean_remote: true
+
+    run_in_vps:
+      - RUN pm2 restart api || pm2 start index.js --name api
 """
 
 def print_help_screen():

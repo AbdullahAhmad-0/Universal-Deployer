@@ -131,6 +131,9 @@ services:
       - dist/ -> ${remote_dir}/frontend/dist
       - public/ -> ${remote_dir}/frontend/public
 
+    # (Optional) Wipe remote destination directory before uploading:
+    # clean_remote: true
+
     # Commands executed on VPS after uploading (SSH only):
     run_in_vps:
       - RUN systemctl reload nginx
@@ -162,6 +165,36 @@ services:
     run_in_vps:
       - RUN docker compose ps
       - RUN docker compose logs --tail=25 backend
+
+  # ---------------------------------------------------------------------------
+  # 3. API / Worker (Direct Working Directory Upload with Ignore Rules)
+  # ---------------------------------------------------------------------------
+  api:
+    description: "Sync current working directory directly to VPS with ignore rules"
+    docker: false
+    work_dir: ./api
+
+    # Upload entire working directory (.) to remote VPS destination:
+    upload:
+      - . -> ${remote_dir}/api
+
+    # Files and folders to ignore when uploading:
+    # (You can also put these into a .deployignore file!)
+    ignore:
+      - node_modules
+      - .venv
+      - venv
+      - __pycache__
+      - .git
+      - .env.local
+      - "*.log"
+      - "*.pyc"
+
+    # (Optional) Wipe destination directory before uploading:
+    # clean_remote: true
+
+    run_in_vps:
+      - RUN pm2 restart api || pm2 start index.js --name api
 ```
 
 ---
@@ -177,6 +210,46 @@ Within `build`, `before_deploy`, and `run_in_vps`, you can write steps as clean 
 | `COPY <src> <dst>` | `- COPY ./dist -> ${remote_dir}/dist` | Copies local files/folders locally or uploads them to the remote server. |
 | `WORKDIR <dir>` | `- WORKDIR ./subfolder` | Changes current working directory for subsequent steps. |
 | `ENV <k>=<v>` | `- ENV NODE_ENV=production` | Sets an environment variable for subsequent steps. |
+
+---
+
+## 📁 Directory Uploads, Ignore Rules & Clean Remote
+
+### 1. Uploading Current Working Directory (`.`)
+If you want to upload the entire codebase of your working directory (e.g., Python, Node.js, PHP, or Go apps) rather than just a `dist/` subfolder, specify `.`:
+
+```yaml
+upload:
+  - . -> ${remote_dir}/api
+```
+
+### 2. Ignoring Files and Folders (`ignore:`)
+When uploading directories, you can exclude heavy, generated, or sensitive files using the `ignore:` (or `exclude:`) list in your `deploy.yml`:
+
+```yaml
+ignore:
+  - node_modules
+  - .venv
+  - venv
+  - __pycache__
+  - .git
+  - .env.local
+  - "*.log"
+  - "*.pyc"
+```
+
+> [!TIP]
+> **Fast Folder Pruning**: Ignored directories like `node_modules` or `.venv` are never traversed, ensuring fast uploads without scanning tens of thousands of unnecessary files.
+
+### 3. Using `.deployignore`
+You can also place a **`.deployignore`** file in your service directory or project root using standard `.gitignore` syntax. `uhdeploy` will detect and apply these rules automatically.
+
+### 4. Overwrite Behavior vs. `clean_remote`
+- **Default (Safe Overwrite)**: `uhdeploy` overwrites matching files on the server with new ones. Any existing files already on the server that are not in your upload (e.g., user uploads, runtime database files, logs) **remain untouched and safe**.
+- **Wiping Destination Folder (`clean_remote: true`)**: If you want to empty the target folder on the VPS before uploading fresh files, simply set:
+  ```yaml
+  clean_remote: true
+  ```
 
 ---
 
