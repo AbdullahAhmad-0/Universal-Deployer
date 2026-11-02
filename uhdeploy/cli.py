@@ -216,21 +216,40 @@ def load_env_file(filepath):
                 env_vars[key.strip()] = val
     return env_vars
 
-def substitute_env_vars(raw_text, env_dict):
+# Protected runtime variables that are resolved at deployment runtime or config parsing
+PROTECTED_VARS = {"remote_dir", "dest", "remote_base", "vps_dir"}
+
+def substitute_env_vars(raw_text, env_dict, protect_keys=True):
     """
     Substitutes ${VAR} and ${VAR:-default} and $VAR with environment values.
+    Preserves protected keys like ${remote_dir} if not explicitly defined in env_dict.
     """
     def replace_bracket(match):
         expr = match.group(1)
         if ":-" in expr:
             var_name, default_val = expr.split(":-", 1)
         else:
-            var_name, default_val = expr, ""
-        return env_dict.get(var_name, os.environ.get(var_name, default_val))
+            var_name, default_val = expr, None
+
+        if var_name in env_dict:
+            return str(env_dict[var_name])
+        if var_name in os.environ:
+            return os.environ[var_name]
+        if default_val is not None:
+            return default_val
+        if protect_keys and var_name in PROTECTED_VARS:
+            return match.group(0)  # Keep ${remote_dir} intact!
+        return ""
 
     def replace_simple(match):
         var_name = match.group(1)
-        return env_dict.get(var_name, os.environ.get(var_name, f"${var_name}"))
+        if var_name in env_dict:
+            return str(env_dict[var_name])
+        if var_name in os.environ:
+            return os.environ[var_name]
+        if protect_keys and var_name in PROTECTED_VARS:
+            return match.group(0)
+        return f"${var_name}"
 
     # Replace ${VAR:-default} and ${VAR}
     result = re.sub(r"\$\{([A-Za-z0-9_]+(?::-.*?|)?)\}", replace_bracket, raw_text)
@@ -265,6 +284,14 @@ def parse_deploy_config(config_path, project_root):
 
     # Add runtime helper variables
     env_dict["PROJECT_DIR"] = project_root
+
+    # Pre-extract server.remote_dir from configuration so ${remote_dir} is immediately available
+    remote_dir_match = re.search(r"^\s*remote_dir:\s*['\"]?([^'\"#\r\n]+)['\"]?", raw_content, re.MULTILINE)
+    if remote_dir_match:
+        extracted_remote = remote_dir_match.group(1).strip()
+        # Resolve any nested variables in remote_dir
+        extracted_remote = substitute_env_vars(extracted_remote, env_dict, protect_keys=False)
+        env_dict["remote_dir"] = extracted_remote.replace("\\", "/").rstrip("/")
 
     # Substitute env vars
     resolved_content = substitute_env_vars(raw_content, env_dict)
@@ -422,6 +449,10 @@ def is_ignored(name, rel_path, ignore_patterns):
         pat_clean = pat.strip().replace("\\", "/").rstrip("/")
         if not pat_clean or pat_clean.startswith("#"):
             continue
+        if pat_clean.startswith("./"):
+            pat_clean = pat_clean[2:]
+        pat_clean = pat_clean.lstrip("/")
+
         # Direct basename match (e.g., "node_modules", ".env.local", "*.pyc")
         if fnmatch.fnmatch(norm_name, pat_clean):
             return True
@@ -560,7 +591,8 @@ class SSHManager:
 
     def upload_file(self, local_path, remote_path, retries=5):
         import time
-        remote_path = remote_path.replace("\\", "/")
+        local_path = os.path.normpath(local_path)
+        remote_path = re.sub(r"/+", "/", remote_path.replace("\\", "/"))
         parent_dir = os.path.dirname(remote_path)
         if parent_dir:
             self.mkdir_p(parent_dir)
@@ -619,7 +651,8 @@ class SSHManager:
                         pass
 
     def upload_directory(self, local_dir, remote_dir, ignore_patterns=None):
-        remote_dir = remote_dir.replace("\\", "/")
+        local_dir = os.path.normpath(local_dir)
+        remote_dir = re.sub(r"/+", "/", remote_dir.replace("\\", "/")).rstrip("/")
         self.mkdir_p(remote_dir)
 
         patterns = list(DEFAULT_IGNORES)
@@ -628,14 +661,14 @@ class SSHManager:
 
         print(f"  {Fore.LIGHTBLUE_EX}⇗ Syncing directory:{Style.RESET_ALL} {local_dir} -> {remote_dir}")
         for root, dirs, files in os.walk(local_dir):
-            rel_dir = os.path.relpath(root, local_dir)
+            rel_dir = os.path.relpath(root, local_dir).replace("\\", "/")
             # Prune directory search so os.walk does not traverse ignored folders (e.g. node_modules, .venv)
             dirs[:] = [
                 d for d in dirs
                 if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
             ]
 
-            target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}".replace("\\", "/")
+            target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}"
             self.mkdir_p(target_sub)
 
             for f in files:
@@ -643,7 +676,7 @@ class SSHManager:
                 if is_ignored(f, rel_file, patterns):
                     continue
                 l_file = os.path.join(root, f)
-                r_file = f"{target_sub}/{f}".replace("\\", "/")
+                r_file = f"{target_sub}/{f}"
                 self.upload_file(l_file, r_file)
 
 
@@ -704,7 +737,8 @@ class FTPManager:
                     pass
 
     def upload_file(self, local_path, remote_path):
-        remote_path = remote_path.replace("\\", "/")
+        local_path = os.path.normpath(local_path)
+        remote_path = re.sub(r"/+", "/", remote_path.replace("\\", "/"))
         parent_dir = os.path.dirname(remote_path)
         if parent_dir:
             self.mkdir_p(parent_dir)
@@ -714,7 +748,8 @@ class FTPManager:
             self.ftp.storbinary(f"STOR {remote_path}", f)
 
     def upload_directory(self, local_dir, remote_dir, ignore_patterns=None):
-        remote_dir = remote_dir.replace("\\", "/")
+        local_dir = os.path.normpath(local_dir)
+        remote_dir = re.sub(r"/+", "/", remote_dir.replace("\\", "/")).rstrip("/")
         self.mkdir_p(remote_dir)
 
         patterns = list(DEFAULT_IGNORES)
@@ -723,13 +758,13 @@ class FTPManager:
 
         print(f"  {Fore.LIGHTBLUE_EX}⇗ [FTP] Syncing directory:{Style.RESET_ALL} {local_dir} -> {remote_dir}")
         for root, dirs, files in os.walk(local_dir):
-            rel_dir = os.path.relpath(root, local_dir)
+            rel_dir = os.path.relpath(root, local_dir).replace("\\", "/")
             dirs[:] = [
                 d for d in dirs
                 if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
             ]
 
-            target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}".replace("\\", "/")
+            target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}"
             self.mkdir_p(target_sub)
 
             for f in files:
@@ -737,7 +772,7 @@ class FTPManager:
                 if is_ignored(f, rel_file, patterns):
                     continue
                 l_file = os.path.join(root, f)
-                r_file = f"{target_sub}/{f}".replace("\\", "/")
+                r_file = f"{target_sub}/{f}"
                 self.upload_file(l_file, r_file)
 
 
@@ -789,7 +824,7 @@ def deploy_service(name, cfg, project_root, dry_run=False):
     host = server_cfg.get("host") or server_cfg.get("ip")
     user = server_cfg.get("user") or server_cfg.get("username", "root")
     port = server_cfg.get("port") or (21 if proto == "ftp" else 22)
-    remote_base = (server_cfg.get("remote_dir") or server_cfg.get("path") or f"/opt/{name}").replace("\\", "/")
+    remote_base = (server_cfg.get("remote_dir") or server_cfg.get("path") or f"/opt/{name}").replace("\\", "/").rstrip("/")
 
     # Check connection requirements
     if not dry_run and not host:
@@ -797,6 +832,50 @@ def deploy_service(name, cfg, project_root, dry_run=False):
         sys.exit(1)
 
     log_info(f"Target Server: {Fore.WHITE}{user}@{host}:{port} ({proto.upper()}) | Remote Dir: {remote_base}")
+
+    # Resolve ignore patterns early
+    ignore_list = list(DEFAULT_IGNORES)
+    custom_ignores = cfg.get("ignore") or cfg.get("exclude") or []
+    if isinstance(custom_ignores, str):
+        custom_ignores = [custom_ignores]
+    ignore_list.extend(custom_ignores)
+
+    # Check for .deployignore in work_dir or project_root
+    for cand_dir in [work_dir, project_root]:
+        dep_ign = os.path.join(cand_dir, ".deployignore")
+        if os.path.isfile(dep_ign):
+            try:
+                with open(dep_ign, "r", encoding="utf-8", errors="replace") as dif:
+                    for line in dif:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            ignore_list.append(line)
+            except Exception:
+                pass
+            break
+
+    # Parse pre-deploy and post-deploy steps
+    before_steps = normalize_steps(cfg.get("before_deploy") or cfg.get("pre_deploy") or cfg.get("before_run"))
+    remote_steps = normalize_steps(cfg.get("run_in_vps") or cfg.get("after_deploy") or cfg.get("post_deploy"))
+
+    # Docker configuration
+    docker_cfg = cfg.get("docker")
+    is_docker = False
+    if isinstance(docker_cfg, dict):
+        is_docker = docker_cfg.get("enabled", True)
+    elif isinstance(docker_cfg, bool):
+        is_docker = docker_cfg
+
+    # Non-Docker upload list
+    upload_list = cfg.get("upload") or []
+    if isinstance(upload_list, str):
+        upload_list = [upload_list]
+    if not upload_list and not is_docker:
+        candidate_dist = os.path.join(work_dir, "dist")
+        if os.path.isdir(candidate_dist):
+            upload_list.append(f"dist/ -> {remote_base}")
+        else:
+            upload_list.append(f". -> {remote_base}")
 
     # 2. Local Build Phase
     build_steps = normalize_steps(cfg.get("build") or cfg.get("for_build") or cfg.get("build_steps"))
@@ -817,8 +896,73 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                 work_dir = os.path.abspath(os.path.join(work_dir, s["dir"]))
                 log_info(f"Changed local working dir to: {work_dir}")
 
+    # Dry-run full simulation mode
     if dry_run:
-        log_info(f"[DRY-RUN] Finished simulating build for '{name}'.")
+        # Pre-deploy simulation
+        if before_steps:
+            print_separator("─", 50, Fore.MAGENTA)
+            log_step(name, "PRE-DEPLOY [DRY-RUN]", f"Simulating {len(before_steps)} pre-deploy step(s)...")
+            for s in before_steps:
+                if s["action"] in ("RUN", "CMD"):
+                    cmd = s["command"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
+                    print(f"  {Fore.YELLOW}[DRY-RUN VPS CMD]{Style.RESET_ALL} {cmd}")
+                elif s["action"] == "COPY":
+                    local_src = os.path.normpath(os.path.join(project_root, s["src"]) if not os.path.isabs(s["src"]) else s["src"])
+                    remote_dst = s["dest"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
+                    if not remote_dst.startswith("/"):
+                        remote_dst = f"{remote_base}/{remote_dst}"
+                    remote_dst = re.sub(r"/+", "/", remote_dst).rstrip("/")
+                    print(f"  {Fore.YELLOW}[DRY-RUN SFTP COPY]{Style.RESET_ALL} {local_src} -> {remote_dst}")
+
+        # Deploy simulation
+        if is_docker:
+            print_separator("─", 50, Fore.MAGENTA)
+            log_step(name, "DOCKER [DRY-RUN]", "Simulating Docker container deployment...")
+            d_dict = docker_cfg if isinstance(docker_cfg, dict) else {}
+            s_name = d_dict.get("service_name") or d_dict.get("service") or name
+            img = d_dict.get("image") or f"{name}:latest"
+            print(f"  {Fore.YELLOW}[DRY-RUN DOCKER]{Style.RESET_ALL} Service: {s_name} | Image: {img}")
+        else:
+            print_separator("─", 50, Fore.MAGENTA)
+            log_step(name, "UPLOAD [DRY-RUN]", "Simulating file uploads and target destinations...")
+            for up in upload_list:
+                src, dst = "", ""
+                if isinstance(up, dict):
+                    src, dst = up.get("src", ""), up.get("dest", "")
+                elif isinstance(up, str):
+                    parts = up.replace("->", " ").split()
+                    src, dst = (parts[0], parts[1]) if len(parts) >= 2 else (parts[0], remote_base)
+
+                dst = dst.replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
+                if not dst.startswith("/"):
+                    dst = f"{remote_base}/{dst}"
+                dst = re.sub(r"/+", "/", dst).rstrip("/")
+
+                local_full = os.path.normpath(os.path.join(work_dir, src) if not os.path.isabs(src) else src)
+                if os.path.isdir(local_full):
+                    match_count = 0
+                    for root, dirs, files in os.walk(local_full):
+                        rel_d = os.path.relpath(root, local_full).replace("\\", "/")
+                        dirs[:] = [d for d in dirs if not is_ignored(d, d if rel_d == "." else f"{rel_d}/{d}", ignore_list)]
+                        for f in files:
+                            rel_f = f if rel_d == "." else f"{rel_d}/{f}"
+                            if not is_ignored(f, rel_f, ignore_list):
+                                match_count += 1
+                    print(f"  {Fore.YELLOW}[DRY-RUN SYNC DIR]{Style.RESET_ALL} {local_full} -> {dst}")
+                    print(f"    {Fore.CYAN}ℹ️  {match_count} files would be uploaded{Style.RESET_ALL} (ignoring: {', '.join(custom_ignores[:5])})")
+                elif os.path.isfile(local_full):
+                    print(f"  {Fore.YELLOW}[DRY-RUN UPLOAD FILE]{Style.RESET_ALL} {local_full} -> {dst}")
+
+        # Post-deploy simulation
+        if remote_steps:
+            print_separator("─", 50, Fore.MAGENTA)
+            log_step(name, "RUN IN VPS [DRY-RUN]", f"Simulating {len(remote_steps)} remote command(s)...")
+            for s in remote_steps:
+                if s["action"] in ("RUN", "CMD"):
+                    cmd = s["command"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
+                    print(f"  {Fore.YELLOW}[DRY-RUN VPS CMD]{Style.RESET_ALL} {cmd}")
+
+        log_success(f"[DRY-RUN] Finished simulating deployment for '{name}'.")
         return
 
     # 3. Establish Connection to VPS
@@ -844,54 +988,27 @@ def deploy_service(name, cfg, project_root, dry_run=False):
         # Ensure remote base directory exists
         conn.mkdir_p(remote_base)
 
-        # Resolve ignore patterns
-        ignore_list = list(DEFAULT_IGNORES)
-        custom_ignores = cfg.get("ignore") or cfg.get("exclude") or []
-        if isinstance(custom_ignores, str):
-            custom_ignores = [custom_ignores]
-        ignore_list.extend(custom_ignores)
-
-        # Check for .deployignore in work_dir or project_root
-        for cand_dir in [work_dir, project_root]:
-            dep_ign = os.path.join(cand_dir, ".deployignore")
-            if os.path.isfile(dep_ign):
-                try:
-                    with open(dep_ign, "r", encoding="utf-8", errors="replace") as dif:
-                        for line in dif:
-                            line = line.strip()
-                            if line and not line.startswith("#"):
-                                ignore_list.append(line)
-                except Exception:
-                    pass
-                break
-
         # Pre-deploy commands / remote preparations
-        before_steps = normalize_steps(cfg.get("before_deploy") or cfg.get("pre_deploy") or cfg.get("before_run"))
         if before_steps:
             print_separator("─", 50, Fore.MAGENTA)
             log_step(name, "PRE-DEPLOY", f"Running {len(before_steps)} pre-deploy step(s) on VPS...")
             for s in before_steps:
                 action = s["action"]
                 if action in ("RUN", "CMD"):
-                    conn.run_cmd(s["command"], cwd=remote_base)
+                    cmd = s["command"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
+                    conn.run_cmd(cmd, cwd=remote_base)
                 elif action == "COPY":
-                    local_src = os.path.join(project_root, s["src"]) if not os.path.isabs(s["src"]) else s["src"]
-                    remote_dst = s["dest"].replace("${remote_dir}", remote_base)
+                    local_src = os.path.normpath(os.path.join(project_root, s["src"]) if not os.path.isabs(s["src"]) else s["src"])
+                    remote_dst = s["dest"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
                     if not remote_dst.startswith("/"):
-                        remote_dst = f"{remote_base}/{remote_dst}".replace("\\", "/")
+                        remote_dst = f"{remote_base}/{remote_dst}"
+                    remote_dst = re.sub(r"/+", "/", remote_dst).rstrip("/")
                     if os.path.isdir(local_src):
                         conn.upload_directory(local_src, remote_dst, ignore_patterns=ignore_list)
                     elif os.path.isfile(local_src):
                         conn.upload_file(local_src, remote_dst)
 
         # 4. Handle Docker OR Non-Docker Deployments
-        docker_cfg = cfg.get("docker")
-        is_docker = False
-        if isinstance(docker_cfg, dict):
-            is_docker = docker_cfg.get("enabled", True)
-        elif isinstance(docker_cfg, bool):
-            is_docker = docker_cfg
-
         if is_docker:
             if proto == "ftp":
                 log_warning("⚠️ Docker deployments require SSH for execution. Over FTP, container commands cannot run.")
@@ -1041,16 +1158,18 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                     else:
                         src, dst = parts[0], remote_base
 
-                dst = dst.replace("${remote_dir}", remote_base)
+                dst = dst.replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
                 if not dst.startswith("/"):
-                    dst = f"{remote_base}/{dst}".replace("\\", "/")
+                    dst = f"{remote_base}/{dst}"
+                dst = re.sub(r"/+", "/", dst).rstrip("/")
+
+                local_full = os.path.normpath(os.path.join(work_dir, src) if not os.path.isabs(src) else src)
 
                 # If clean_remote is enabled, empty destination directory on VPS before upload
                 if clean_remote and proto == "ssh":
                     log_info(f"Emptying remote destination before upload: {dst}")
                     conn.run_cmd(f"rm -rf '{dst}'/* '{dst}'/.[!.]* 2>/dev/null || true")
 
-                local_full = os.path.join(work_dir, src) if not os.path.isabs(src) else src
                 if os.path.isdir(local_full):
                     conn.upload_directory(local_full, dst, ignore_patterns=ignore_list)
                 elif os.path.isfile(local_full):
@@ -1059,19 +1178,20 @@ def deploy_service(name, cfg, project_root, dry_run=False):
                     log_warning(f"File or directory to upload not found: {local_full}")
 
         # 5. Remote Post-Deploy / Run in VPS Phase
-        remote_steps = normalize_steps(cfg.get("run_in_vps") or cfg.get("after_deploy") or cfg.get("post_deploy"))
         if remote_steps:
             print_separator("─", 50, Fore.MAGENTA)
             log_step(name, "RUN IN VPS", f"Executing {len(remote_steps)} remote command(s)...")
             for s in remote_steps:
                 action = s["action"]
                 if action in ("RUN", "CMD"):
-                    conn.run_cmd(s["command"], cwd=remote_base)
+                    cmd = s["command"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
+                    conn.run_cmd(cmd, cwd=remote_base)
                 elif action == "COPY":
-                    local_src = os.path.join(project_root, s["src"]) if not os.path.isabs(s["src"]) else s["src"]
-                    remote_dst = s["dest"].replace("${remote_dir}", remote_base)
+                    local_src = os.path.normpath(os.path.join(project_root, s["src"]) if not os.path.isabs(s["src"]) else s["src"])
+                    remote_dst = s["dest"].replace("${remote_dir}", remote_base).replace("$remote_dir", remote_base)
                     if not remote_dst.startswith("/"):
-                        remote_dst = f"{remote_base}/{remote_dst}".replace("\\", "/")
+                        remote_dst = f"{remote_base}/{remote_dst}"
+                    remote_dst = re.sub(r"/+", "/", remote_dst).rstrip("/")
                     if os.path.isdir(local_src):
                         conn.upload_directory(local_src, remote_dst, ignore_patterns=ignore_list)
                     elif os.path.isfile(local_src):
