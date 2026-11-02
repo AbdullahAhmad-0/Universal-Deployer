@@ -11,14 +11,14 @@
 
 # (Optional) Global connection settings inherited by all services
 server:
-  type: ssh                    # Protocol: "ssh" (SFTP + Shell) or "ftp" (File transfer only)
-  host: ${VPS_IP}              # VPS IP address or domain (or set hardcoded)
-  user: ${VPS_USER:-root}      # SSH/FTP Username (defaults to root)
-  port: 22                     # Port: 22 for SSH, 21 for FTP
-  key_path: ${SSH_KEY_PATH}    # Path to private key file (e.g., ~/.ssh/id_rsa or C:/keys/vps.pem)
-  passphrase: ${SSH_PASSPHRASE}# (Optional) Passphrase if your private key is encrypted
-  password: ${VPS_PASSWORD}    # (Optional) SSH or FTP password if not using key
-  remote_dir: /opt/my-project  # Remote base directory on the VPS
+  type: ssh                     # Protocol: "ssh" (SFTP + Shell) or "ftp" (File transfer only)
+  host: ${VPS_IP}               # VPS IP address or domain (or set hardcoded)
+  user: ${VPS_USER:-root}       # SSH/FTP Username (defaults to root)
+  port: 22                      # Port: 22 for SSH, 21 for FTP
+  key_path: ${SSH_KEY_PATH}     # Path to private key file (e.g., ~/.ssh/id_rsa or C:/keys/vps.pem)
+  passphrase: ${SSH_PASSPHRASE} # (Optional) Passphrase if your private key is encrypted
+  password: ${VPS_PASSWORD}     # (Optional) SSH or FTP password if not using key
+  remote_dir: /opt/my-project   # Remote base directory on the VPS
 
 # (Optional) Specify custom env file to load (default: .env or .env.deploy)
 env_file: .env

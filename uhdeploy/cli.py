@@ -61,7 +61,7 @@ except ImportError:
 def banner():
     lines = [
         f"{Fore.CYAN}╔═══════════════════════════════════════════════════════════════════════════╗",
-        f"║ {Fore.CYAN}{Style.BRIGHT}🚀  U H D E P L O Y   -   U N I V E R S A L   D E P L O Y E R              {Style.NORMAL}{Fore.CYAN}║",
+        f"║ {Fore.CYAN}{Style.BRIGHT}🚀  U H D E P L O Y   -   U N I V E R S A L   D E P L O Y E R             {Style.NORMAL}{Fore.CYAN}║",
         f"║ {Fore.YELLOW}Local-to-VPS Automated Deployment (SSH / SFTP / FTP / Docker)             {Fore.CYAN}║",
         f"╚═══════════════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}"
     ]
@@ -1002,14 +1002,14 @@ EXAMPLE_DEPLOY_YAML = """# =====================================================
 # Environment variables like ${VPS_IP} or ${SSH_KEY_PATH} are loaded from .env!
 
 server:
-  type: ssh                    # "ssh" (SFTP + Shell) or "ftp" (File transfer only)
-  host: ${VPS_IP}              # VPS Hostname or IP
-  user: ${VPS_USER:-root}      # User (defaults to root)
-  port: 22                     # Port (22 for SSH, 21 for FTP)
-  key_path: ${SSH_KEY_PATH}    # Path to SSH private key
-  passphrase: ${SSH_PASSPHRASE}# (Optional) Passphrase for private key
-  password: ${VPS_PASSWORD}    # (Optional) Password for SSH or FTP
-  remote_dir: /opt/my-app      # Remote base directory on VPS
+  type: ssh                     # "ssh" (SFTP + Shell) or "ftp" (File transfer only)
+  host: ${VPS_IP}               # VPS Hostname or IP
+  user: ${VPS_USER:-root}       # User (defaults to root)
+  port: 22                      # Port (22 for SSH, 21 for FTP)
+  key_path: ${SSH_KEY_PATH}     # Path to SSH private key
+  passphrase: ${SSH_PASSPHRASE} # (Optional) Passphrase for private key
+  password: ${VPS_PASSWORD}     # (Optional) Password for SSH or FTP
+  remote_dir: /opt/my-app       # Remote base directory on VPS
 
 services:
   # ---------------------------------------------------------------------------
