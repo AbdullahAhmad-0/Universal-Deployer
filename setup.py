@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="uhdeploy",
-    version="0.1.4",
+    version="0.1.5",
     author="Abdullah Ahmad",
     url="https://github.com/AbdullahAhmad-0/Universal-Deployer",
     project_urls={

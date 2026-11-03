@@ -20,6 +20,12 @@ server:
   password: ${VPS_PASSWORD}     # (Optional) SSH or FTP password if not using key
   remote_dir: /opt/my-project   # Remote base directory on the VPS
 
+  # High-performance transfer settings:
+  threads: 8                    # (Optional) Concurrent upload worker threads (default: 8)
+  retries: 5                    # (Optional) Reconnect and retry attempts on dropped sockets (default: 5)
+  # archive: true               # (Optional) Ultra-fast 1-shot compressed archive sync (SSH only)
+  # overwrite: false            # (Optional) Set false to skip files that already exist on server (default: true)
+
 # (Optional) Specify custom env file to load (default: .env or .env.deploy)
 env_file: .env
 
@@ -52,8 +58,12 @@ services:
       - dist/ -> ${remote_dir}/frontend/dist
       - public/ -> ${remote_dir}/frontend/public
 
-    # (Optional) Wipe remote destination directory before uploading:
-    # clean_remote: true
+    # Upload & Transfer Options:
+    # overwrite: false         # (Optional) Set false to skip files that already exist on VPS (default: true)
+    # clean_remote: true       # Set true to wipe/empty destination directory on VPS before uploading
+    # archive: false           # Set true for ultra-fast single-shot archive transfer (SSH only)
+    # threads: 8               # Number of parallel upload threads (default: 8)
+    # retries: 5               # Retry attempts on network drop (default: 5)
 
     # Commands to execute on the remote VPS after upload (SSH ONLY)
     # NOTE: If server type is FTP, remote shell execution is NOT supported.
@@ -107,12 +117,46 @@ services:
       - RUN echo "✅ Backend service is up and running!"
 
   # ---------------------------------------------------------------------------
-  # 📁 Service 3: Legacy or Shared Hosting via FTP (File Transfer Only)
+  # 📁 Service 3: API / Working Directory Upload with Ignore Rules
+  # ---------------------------------------------------------------------------
+  api:
+    description: "Sync current working directory directly to VPS with ignore rules"
+    docker: false
+    work_dir: ./backend
+
+    # Upload entire working directory (.) to remote VPS destination:
+    upload:
+      - . -> ${remote_dir}/backend
+
+    # Files and folders to ignore when uploading:
+    # (You can also put these into a .deployignore file!)
+    ignore:
+      - node_modules
+      - .venv
+      - venv
+      - __pycache__
+      - .git
+      - .env.local
+      - "*.log"
+      - "*.pyc"
+
+    # Upload behavior settings:
+    # overwrite: false         # (Optional) Set false to skip files that already exist on server (default: true)
+    # clean_remote: true       # Set true if you want to wipe destination folder before upload
+    # archive: false           # (Optional) Enable fast archive sync for directories with 1000+ files
+    # threads: 8               # Parallel threads (default: 8)
+    # retries: 5               # Retry attempts on connection drops (default: 5)
+
+    run_in_vps:
+      - RUN pm2 restart api || pm2 start index.js --name api
+
+  # ---------------------------------------------------------------------------
+  # 📡 Service 4: Legacy or Shared Hosting via FTP (File Transfer Only)
   # ---------------------------------------------------------------------------
   ftp_site:
     description: "Static website deployment over plain FTP"
     docker: false
-    work_dir: ./Backend
+    work_dir: ./frontend
     server:
       type: ftp                # Use FTP protocol
       host: ${FTP_HOST}
@@ -120,8 +164,11 @@ services:
       password: ${FTP_PASS}
       port: 21
       remote_dir: /public_html
+      threads: 4               # FTP parallel connections
+      retries: 5               # FTP reconnect attempts
+      # overwrite: false       # (Optional) Set false to skip files that already exist (default: true)
     upload:
-      - . -> /public_html
+      - dist/ -> /public_html
     # (Optional) Ignore patterns:
     ignore:
       - node_modules

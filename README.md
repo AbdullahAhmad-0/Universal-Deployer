@@ -30,6 +30,10 @@ pip install -e .
 - **Dual Protocol Support**:
   - **SSH / SFTP**: Full remote terminal execution (`paramiko`), automated directory sync, and Docker container orchestration.
   - **FTP**: Built-in FTP transfer (`ftplib`) for static/shared hosting environments (with graceful warnings for unsupported remote commands).
+- **Blazing Fast Multi-Threaded Uploads**: High-concurrency parallel SFTP/FTP transfers (default 8 threads, configurable up to 32) using persistent channel multiplexing.
+- **Auto-Reconnect & Retry**: Automatically detects dropped SSH/FTP connections, re-establishes authentication, and retries file transfers without failing the deployment.
+- **Ultra-Fast Archive Mode (`--archive`)**: Package 1,000+ files into a compressed in-memory archive, upload in 1 second, and extract instantly on the remote VPS.
+- **Skip Existing Files Option (`overwrite: false` / `--no-overwrite`)**: By default, `uhdeploy` automatically overwrites matching files on the destination server. If you want to preserve existing server files and skip uploading them, simply set `overwrite: false` or pass `--no-overwrite`.
 - **Flexible Docker Workflows**:
   - **Local Build & Tar Transfer (Default)**: Builds the Docker image locally, exports it to a `.tar` archive, transfers it via SFTP, and loads it into the remote Docker daemon. This saves RAM and CPU on low-spec VPS servers!
   - **Remote Build**: Syncs files and triggers `docker compose build` directly on the VPS.
@@ -103,6 +107,10 @@ server:
   passphrase: ${SSH_PASSPHRASE}# (Optional) Private key passphrase
   password: ${VPS_PASSWORD}    # (Optional) SSH or FTP password
   remote_dir: /opt/my-app      # Remote base directory on VPS
+  threads: 8                   # (Optional) Parallel upload threads (default: 8)
+  retries: 5                   # (Optional) Auto-reconnect & retry attempts (default: 5)
+  # archive: true              # (Optional) Ultra-fast 1-shot archive sync (SSH only)
+  # overwrite: false           # (Optional) Set false to skip files that already exist on server (default: true)
 
 # Optional custom env file to load (default: .env or .env.deploy)
 env_file: .env
@@ -244,12 +252,36 @@ ignore:
 ### 3. Using `.deployignore`
 You can also place a **`.deployignore`** file in your service directory or project root using standard `.gitignore` syntax. `uhdeploy` will detect and apply these rules automatically.
 
-### 4. Overwrite Behavior vs. `clean_remote`
-- **Default (Safe Overwrite)**: `uhdeploy` overwrites matching files on the server with new ones. Any existing files already on the server that are not in your upload (e.g., user uploads, runtime database files, logs) **remain untouched and safe**.
-- **Wiping Destination Folder (`clean_remote: true`)**: If you want to empty the target folder on the VPS before uploading fresh files, simply set:
+### 4. Overwrite Behavior vs. Skip Existing (`overwrite: false` / `--no-overwrite`) vs. `clean_remote`
+- **Default (Automatic Overwrite)**: You do not need to configure anything! `uhdeploy` automatically overwrites matching files on the destination server. Non-conflicting files on the server (like database files, user uploads, runtime logs) **remain untouched and safe**.
+- **Skip Existing Files (`overwrite: false` or `--no-overwrite`)**: When you want to preserve existing files on the remote server and ONLY upload new or missing files, set:
+  ```yaml
+  overwrite: false   # Skip files that already exist on the server (default: true)
+  ```
+  Or pass `--no-overwrite` via the CLI:
+  ```bash
+  uhdeploy backend --no-overwrite
+  ```
+- **Wiping Destination Folder (`clean_remote: true`)**: If you want to completely empty/wipe the target directory on the VPS before uploading fresh files, set:
   ```yaml
   clean_remote: true
   ```
+
+---
+
+## ⚡ High-Performance Uploads (Threads, Retries & Archive Sync)
+
+`uhdeploy` includes cutting-edge features to accelerate large transfers and survive unstable network connections:
+
+1. **Multi-Threaded Uploads (`threads: 8` / `-t N`)**:
+   Instead of uploading sequentially, `uhdeploy` opens dedicated SFTP/FTP worker threads to upload multiple files in parallel. You can customize the thread count per-service or via the CLI flag `-t 16`.
+2. **Auto-Reconnect & Retry (`retries: 5` / `--retries N`)**:
+   If a network glitch or VPS timeout disconnects the SFTP/FTP channel, `uhdeploy` automatically reconnects, re-authenticates, and resumes transferring without failing your deployment.
+3. **Ultra-Fast Archive Mode (`archive: true` / `--archive`)**:
+   For directories containing hundreds or thousands of files, file-by-file SFTP handshakes can be slow. With Archive Mode enabled, `uhdeploy` packages all non-ignored files into a compressed `.tar.gz` in memory, uploads it in a single shot, and extracts it directly on the remote VPS in seconds!
+   ```yaml
+   archive: true   # Enable fast archive packaging and sync (SSH only)
+   ```
 
 ---
 
@@ -261,6 +293,9 @@ You can also place a **`.deployignore`** file in your service directory or proje
 | Progress Indicator | ✅ Yes | ✅ Yes |
 | Remote Shell Execution (`RUN`) | ✅ Yes | ❌ Not supported by FTP |
 | Docker Container Management | ✅ Yes | ❌ Not supported by FTP |
+| Multi-Threaded Transfers | ✅ Yes (up to 32 threads) | ✅ Yes (up to 16 threads) |
+| Auto-Reconnect & Retry | ✅ Yes | ✅ Yes |
+| Archive Mode Fast Extraction | ✅ Yes (Remote `tar -xzf`) | ❌ Not supported by FTP |
 | Authentication | Key file, Passphrase, or Password | Username & Password |
 
 > [!NOTE]
@@ -283,6 +318,11 @@ Options:
   -p, --project DIR        Specify project directory containing deploy configuration.
   -s, --service NAME       Name of service to deploy (or 'all').
   -l, --list               List all services available in the configuration file.
+  -t, --threads N          Number of concurrent upload threads (default: 8).
+  --retries N              Max retry & reconnect attempts on network drops (default: 5).
+  --archive                Package files into compressed archive for fast sync (SSH only).
+  --overwrite              Force overwrite existing files on destination server (default behavior).
+  --no-overwrite           Do not overwrite files that already exist on server (skip existing).
   --dry-run                Validate configuration and simulate steps without connecting.
 ```
 
@@ -291,6 +331,15 @@ Options:
 ```bash
 # Preview build and deployment steps without making server changes:
 uhdeploy backend --dry-run
+
+# Deploy with ultra-fast archive sync (single-shot tarball):
+uhdeploy frontend --archive
+
+# Deploy with 16 parallel upload threads:
+uhdeploy api -t 16
+
+# Deploy without overwriting existing files on the server:
+uhdeploy backend --no-overwrite
 
 # List configured services in a custom deploy file:
 uhdeploy -f ./custom-deploy.yml --list
