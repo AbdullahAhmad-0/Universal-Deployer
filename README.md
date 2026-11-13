@@ -36,7 +36,7 @@ pip install -e .
 - **Skip Existing Files Option (`overwrite: false` / `--no-overwrite`)**: By default, `uhdeploy` automatically overwrites matching files on the destination server. If you want to preserve existing server files and skip uploading them, simply set `overwrite: false` or pass `--no-overwrite`.
 - **Flexible Docker Workflows**:
   - **Local Build & Tar Transfer (Default)**: Builds the Docker image locally, exports it to a `.tar` archive, transfers it via SFTP, and loads it into the remote Docker daemon. This saves RAM and CPU on low-spec VPS servers!
-  - **Remote Build**: Syncs files and triggers `docker compose build` directly on the VPS.
+  - **Remote Build (`build_mode: remote`)**: Automatically detects context from `deploy.yml` or `docker-compose.yml`, auto-reads `.dockerignore`, guarantees essential files (`Dockerfile`, `.dockerignore`) are included, packages and SFTP-syncs the context to `${remote_dir}/${context}`, and executes `docker compose build` & `docker compose up -d` on the VPS.
   - **Auto Environment Sync**: Automatically detects and syncs environment files (e.g. `.env.production`) referenced in your `docker-compose.yml`.
 - **Traditional (No Docker) Deployments**: Perfect for static frontends (React, Vue, Next.js static exports, Vite) or traditional Node/Python/PHP apps with local builds and Nginx reloading.
 - **Dynamic Variable Substitution**: Seamlessly interpolate `${VPS_IP}`, `${SSH_KEY_PATH}`, or custom environment variables from `.env` or `.env.deploy` files.
@@ -156,13 +156,13 @@ services:
 
     docker:
       enabled: true
-      compose_file: docker-compose.yml # Compose file (defaults to docker-compose.yml)
+      compose_file: docker-compose.yml # Compose file (defaults to docker-compose.yml, custom overrides overwrite remote docker-compose.yml)
       # (Optional: .env.production referenced in compose is auto-synced!)
       service_name: backend            # Name of service inside docker-compose.yml
-      build_mode: local                # "local" (build tarball & upload) or "remote"
+      build_mode: local                # "local" (build tarball & upload) or "remote" (auto-sync context & build on VPS)
       image: my-backend:latest
-      context: ./backend
-      dockerfile: ./backend/Dockerfile # (Optional)
+      context: ./backend               # Build context (auto-detected from docker-compose.yml if omitted)
+      dockerfile: Dockerfile           # Custom Dockerfile (e.g. Dockerfile.prod; overwrites remote Dockerfile)
 
     # Remote steps executed on VPS BEFORE starting Docker:
     before_deploy:
@@ -247,6 +247,11 @@ ignore:
 ```
 
 > [!TIP]
+> **Docker Files (`Dockerfile` & `.dockerignore`) Isolation**:
+> - **Remote Docker Builds (`build_mode: remote`)**: `Dockerfile` and `.dockerignore` are essential and **always uploaded** to the VPS context folder so `docker compose build` can run.
+> - **Non-Docker Services & Local Builds (`docker: false` or `build_mode: local`)**: `Dockerfile` and `.dockerignore` are **automatically ignored** and never uploaded to your remote server, keeping production web roots and static directories clean.
+
+> [!TIP]
 > **Fast Folder Pruning**: Ignored directories like `node_modules` or `.venv` are never traversed, ensuring fast uploads without scanning tens of thousands of unnecessary files.
 
 ### 3. Using `.deployignore`
@@ -266,6 +271,26 @@ You can also place a **`.deployignore`** file in your service directory or proje
   ```yaml
   clean_remote: true
   ```
+
+### 5. Custom `dockerfile` & `compose_file` Overrides
+By default, Docker services look for `Dockerfile` and `docker-compose.yml`. You can override these per-service in `deploy.yml`:
+
+- **Custom `dockerfile`** (default: `Dockerfile`):
+  ```yaml
+  backend:
+    docker:
+      dockerfile: Dockerfile.prod   # Or ./backend/Dockerfile.dev
+  ```
+  - **Remote Builds (`build_mode: remote`)**: `uhdeploy` uploads `Dockerfile.prod` and **overwrites `Dockerfile`** in the context directory on the remote VPS (while also saving `Dockerfile.prod`). This ensures remote `docker compose build` commands immediately build the intended Dockerfile without configuration mismatch!
+  - **Local Builds (`build_mode: local`)**: Automatically passes `-f Dockerfile.prod` to the local `docker build` command.
+
+- **Custom `compose_file`** (default: `docker-compose.yml`):
+  ```yaml
+  backend:
+    docker:
+      compose_file: docker-compose.prod.yml  # Or docker-compose.staging.yml
+  ```
+  - `uhdeploy` uploads `docker-compose.prod.yml` and **overwrites `docker-compose.yml`** on the remote server. This allows `docker compose build` and `docker compose up -d` on the VPS to run seamlessly without needing extra `-f` arguments.
 
 ---
 

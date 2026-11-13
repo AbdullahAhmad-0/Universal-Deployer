@@ -81,7 +81,7 @@ services:
     # Docker configuration
     docker:
       enabled: true
-      # Compose file path (relative to project root, defaults to docker-compose.yml)
+      # Compose file path (defaults to docker-compose.yml; overwrites remote docker-compose.yml)
       compose_file: docker-compose.yml
       # Compose service name (must match service key defined in docker-compose.yml)
       service_name: backend
@@ -94,11 +94,14 @@ services:
       # Build mode:
       # - "local": Builds docker image locally, packages as tar, uploads to VPS,
       #            and loads it on VPS (saves VPS CPU and memory).
-      # - "remote": Uploads context and builds directly on the VPS.
+      # - "remote": Auto-detects context from deploy.yml or docker-compose.yml,
+      #             auto-reads .dockerignore in context, guarantees essentials (Dockerfile, .dockerignore),
+      #             auto-packages & SFTP-syncs context to ${remote_dir}/${context},
+      #             and runs 'docker compose build' + 'docker compose up -d' on the VPS.
       build_mode: local
       image: my-backend:latest
-      context: ./backend
-      dockerfile: ./backend/Dockerfile
+      context: ./backend               # Auto-detected from docker-compose.yml if omitted
+      dockerfile: Dockerfile           # (Optional) Defaults to Dockerfile; custom file overwrites remote Dockerfile in context
 
     # Commands to run on VPS BEFORE docker starts
     before_deploy:
@@ -129,6 +132,7 @@ services:
       - . -> ${remote_dir}/backend
 
     # Files and folders to ignore when uploading:
+    # (Note: Dockerfile and .dockerignore are automatically ignored for non-docker services!)
     # (You can also put these into a .deployignore file!)
     ignore:
       - node_modules

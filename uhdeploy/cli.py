@@ -446,11 +446,29 @@ DEFAULT_IGNORES = [
     ".uhdeploy_*.tar.gz"
 ]
 
-def is_ignored(name, rel_path, ignore_patterns):
+DOCKER_IGNORE_PATTERNS = [
+    "Dockerfile",
+    "Dockerfile.*",
+    "dockerfile",
+    "dockerfile.*",
+    ".dockerignore"
+]
+
+def is_ignored(name, rel_path, ignore_patterns, essential_files=None):
+    norm_name = name.rstrip("/").rstrip("\\")
+    norm_name_lower = norm_name.lower()
+
+    # Essential files are never ignored (e.g. Dockerfile, .dockerignore in remote Docker build mode)
+    if essential_files:
+        for ef in essential_files:
+            ef_clean = ef.lower().rstrip("/").rstrip("\\")
+            if norm_name_lower == ef_clean or fnmatch.fnmatch(norm_name_lower, ef_clean):
+                return False
+
     if not ignore_patterns:
         return False
-    norm_name = name.rstrip("/").rstrip("\\")
     norm_rel = rel_path.replace("\\", "/").strip("/")
+    norm_rel_lower = norm_rel.lower()
 
     for pat in ignore_patterns:
         pat_clean = pat.strip().replace("\\", "/").rstrip("/")
@@ -459,14 +477,19 @@ def is_ignored(name, rel_path, ignore_patterns):
         if pat_clean.startswith("./"):
             pat_clean = pat_clean[2:]
         pat_clean = pat_clean.lstrip("/")
+        pat_clean_lower = pat_clean.lower()
 
         # Direct basename match (e.g., "node_modules", ".env.local", "*.pyc")
-        if fnmatch.fnmatch(norm_name, pat_clean):
+        if fnmatch.fnmatch(norm_name, pat_clean) or fnmatch.fnmatch(norm_name_lower, pat_clean_lower):
             return True
         # Relative path match (e.g., "dist/*", "logs/*.log")
         if fnmatch.fnmatch(norm_rel, pat_clean) or fnmatch.fnmatch(norm_rel, f"*/{pat_clean}"):
             return True
+        if fnmatch.fnmatch(norm_rel_lower, pat_clean_lower) or fnmatch.fnmatch(norm_rel_lower, f"*/{pat_clean_lower}"):
+            return True
         if fnmatch.fnmatch(norm_rel, f"{pat_clean}/*") or fnmatch.fnmatch(norm_rel, f"*/{pat_clean}/*"):
+            return True
+        if fnmatch.fnmatch(norm_rel_lower, f"{pat_clean_lower}/*") or fnmatch.fnmatch(norm_rel_lower, f"*/{pat_clean_lower}/*"):
             return True
     return False
 
@@ -740,7 +763,7 @@ class SSHManager:
                     except Exception as re_err:
                         log_warning(f"SSH reconnect failed: {re_err}")
 
-    def upload_archive(self, local_dir, remote_dir, ignore_patterns=None, retries=None, overwrite=True):
+    def upload_archive(self, local_dir, remote_dir, ignore_patterns=None, retries=None, overwrite=True, essential_files=None):
         """
         Ultra-fast single-shot archive transfer:
         Packs non-ignored files into a compressed tarball, uploads via SFTP,
@@ -768,11 +791,11 @@ class SSHManager:
                     rel_dir = os.path.relpath(root, local_dir).replace("\\", "/")
                     dirs[:] = [
                         d for d in dirs
-                        if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
+                        if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns, essential_files=essential_files)
                     ]
                     for f in files:
                         rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
-                        if is_ignored(f, rel_file, patterns):
+                        if is_ignored(f, rel_file, patterns, essential_files=essential_files):
                             continue
                         full_local = os.path.join(root, f)
                         tar.add(full_local, arcname=rel_file)
@@ -800,7 +823,7 @@ class SSHManager:
                 except Exception:
                     pass
 
-    def upload_directory(self, local_dir, remote_dir, ignore_patterns=None, max_workers=8, retries=None, overwrite=True):
+    def upload_directory(self, local_dir, remote_dir, ignore_patterns=None, max_workers=8, retries=None, overwrite=True, essential_files=None):
         retries = retries or self.retries
         local_dir = os.path.normpath(local_dir)
         remote_dir = re.sub(r"/+", "/", remote_dir.replace("\\", "/")).rstrip("/")
@@ -817,13 +840,13 @@ class SSHManager:
             rel_dir = os.path.relpath(root, local_dir).replace("\\", "/")
             dirs[:] = [
                 d for d in dirs
-                if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
+                if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns, essential_files=essential_files)
             ]
             target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}"
 
             for f in files:
                 rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
-                if is_ignored(f, rel_file, patterns):
+                if is_ignored(f, rel_file, patterns, essential_files=essential_files):
                     continue
                 l_file = os.path.join(root, f)
                 r_file = f"{target_sub}/{f}"
@@ -1124,7 +1147,7 @@ class FTPManager:
                     raise e
                 time.sleep(min(attempt * 2, 6))
 
-    def upload_directory(self, local_dir, remote_dir, ignore_patterns=None, max_workers=4, retries=None, overwrite=True):
+    def upload_directory(self, local_dir, remote_dir, ignore_patterns=None, max_workers=4, retries=None, overwrite=True, essential_files=None):
         retries = retries or self.retries
         local_dir = os.path.normpath(local_dir)
         remote_dir = re.sub(r"/+", "/", remote_dir.replace("\\", "/")).rstrip("/")
@@ -1140,13 +1163,13 @@ class FTPManager:
             rel_dir = os.path.relpath(root, local_dir).replace("\\", "/")
             dirs[:] = [
                 d for d in dirs
-                if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns)
+                if not is_ignored(d, d if rel_dir == "." else f"{rel_dir}/{d}", patterns, essential_files=essential_files)
             ]
             target_sub = remote_dir if rel_dir == "." else f"{remote_dir}/{rel_dir}"
 
             for f in files:
                 rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
-                if is_ignored(f, rel_file, patterns):
+                if is_ignored(f, rel_file, patterns, essential_files=essential_files):
                     continue
                 l_file = os.path.join(root, f)
                 r_file = f"{target_sub}/{f}"
@@ -1374,6 +1397,171 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
     elif isinstance(docker_cfg, bool):
         is_docker = docker_cfg
 
+    d_dict = {}
+    compose_rel = "docker-compose.yml"
+    compose_path = ""
+    compose_data = {}
+    service_name = name
+    image_name = f"{name}:latest"
+    build_mode = "local"
+    context_rel = rel_work_dir or "."
+    context_dir = work_dir
+    remote_context_dest = remote_base
+    docker_ignores = list(ignore_list)
+    found_dockerignore = None
+    essential_files = None
+    dockerfile_name = "Dockerfile"
+
+    found_dockerfile_path = None
+
+    if is_docker:
+        d_dict = docker_cfg if isinstance(docker_cfg, dict) else {}
+        compose_rel = (
+            d_dict.get("compose_file")
+            or d_dict.get("compose")
+            or d_dict.get("docker_compose")
+            or cfg.get("compose_file")
+            or cfg.get("compose")
+            or "docker-compose.yml"
+        )
+        cand_compose_paths = [
+            os.path.normpath(os.path.join(project_root, compose_rel) if not os.path.isabs(compose_rel) else compose_rel),
+            os.path.normpath(os.path.join(work_dir, compose_rel) if not os.path.isabs(compose_rel) else compose_rel),
+            os.path.normpath(compose_rel)
+        ]
+        compose_path = cand_compose_paths[0]
+        for ccp in cand_compose_paths:
+            if os.path.isfile(ccp):
+                compose_path = ccp
+                break
+
+        service_name = d_dict.get("service_name") or d_dict.get("service") or name
+        image_name = d_dict.get("image") or f"{name}:latest"
+        build_mode = d_dict.get("build_mode", "local").lower() # 'local' (tarball) or 'remote'
+
+        # Auto-detect context from docker-compose.yml if available
+        if os.path.isfile(compose_path):
+            try:
+                with open(compose_path, "r", encoding="utf-8", errors="replace") as cf:
+                    compose_data = yaml.safe_load(cf) or {}
+            except Exception as e:
+                log_warning(f"Could not parse docker-compose.yml: {e}")
+
+        # 1. Auto-detect context & custom dockerfile from deploy.yml or docker-compose.yml
+        context_rel = d_dict.get("context") or cfg.get("context")
+        dockerfile_name = (
+            d_dict.get("dockerfile")
+            or d_dict.get("docker_file")
+            or d_dict.get("Dockerfile")
+            or cfg.get("dockerfile")
+            or cfg.get("docker_file")
+        )
+        if compose_data and isinstance(compose_data, dict):
+            s_dict = compose_data.get("services", {})
+            if isinstance(s_dict, dict):
+                s_def = s_dict.get(service_name, {})
+                if isinstance(s_def, dict):
+                    b_def = s_def.get("build")
+                    if isinstance(b_def, str) and not context_rel:
+                        context_rel = b_def
+                    elif isinstance(b_def, dict):
+                        if not context_rel:
+                            context_rel = b_def.get("context")
+                        if not dockerfile_name and b_def.get("dockerfile"):
+                            dockerfile_name = b_def.get("dockerfile")
+
+        if not context_rel:
+            context_rel = rel_work_dir or "."
+
+        if not dockerfile_name:
+            dockerfile_name = "Dockerfile"
+
+        # Resolve local context directory
+        cand_context_dirs = [
+            os.path.normpath(os.path.join(project_root, context_rel) if not os.path.isabs(context_rel) else context_rel),
+            os.path.normpath(os.path.join(work_dir, context_rel) if not os.path.isabs(context_rel) else context_rel),
+            os.path.normpath(context_rel)
+        ]
+        context_dir = cand_context_dirs[0]
+        for cd in cand_context_dirs:
+            if os.path.isdir(cd):
+                context_dir = cd
+                break
+
+        # Resolve local Dockerfile path
+        cand_df_paths = [
+            os.path.normpath(os.path.join(context_dir, dockerfile_name) if not os.path.isabs(dockerfile_name) else dockerfile_name),
+            os.path.normpath(os.path.join(work_dir, dockerfile_name) if not os.path.isabs(dockerfile_name) else dockerfile_name),
+            os.path.normpath(os.path.join(project_root, dockerfile_name) if not os.path.isabs(dockerfile_name) else dockerfile_name),
+            os.path.normpath(os.path.join(context_dir, os.path.basename(dockerfile_name))),
+            os.path.normpath(os.path.join(work_dir, os.path.basename(dockerfile_name))),
+            os.path.normpath(os.path.join(project_root, os.path.basename(dockerfile_name))),
+            os.path.normpath(os.path.join(context_dir, "Dockerfile")),
+            os.path.normpath(os.path.join(work_dir, "Dockerfile")),
+            os.path.normpath(os.path.join(project_root, "Dockerfile"))
+        ]
+        for cdf in cand_df_paths:
+            if os.path.isfile(cdf):
+                found_dockerfile_path = cdf
+                break
+
+        # Resolve remote context destination: ${remote_dir}/${context}
+        clean_ctx = context_rel.replace("\\", "/").strip()
+        if clean_ctx.startswith("./"):
+            clean_ctx = clean_ctx[2:]
+        clean_ctx = clean_ctx.strip("/")
+
+        if not clean_ctx or clean_ctx == ".":
+            remote_context_dest = remote_base
+        else:
+            remote_context_dest = f"{remote_base}/{clean_ctx}".replace("\\", "/")
+
+        # 2. Auto-read .dockerignore in context folder and project root
+        docker_ignores = list(DEFAULT_IGNORES)
+        if custom_ignores:
+            docker_ignores.extend(custom_ignores)
+
+        dockerignore_cands = [
+            os.path.join(context_dir, ".dockerignore"),
+            os.path.join(project_root, ".dockerignore"),
+            os.path.join(work_dir, ".dockerignore")
+        ]
+        for dip in dockerignore_cands:
+            if os.path.isfile(dip):
+                found_dockerignore = dip
+                break
+
+        if found_dockerignore:
+            try:
+                with open(found_dockerignore, "r", encoding="utf-8", errors="replace") as dif:
+                    di_count = 0
+                    for line in dif:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            docker_ignores.append(line)
+                            di_count += 1
+                    log_info(f"Auto-read .dockerignore ({os.path.basename(context_dir)}): loaded {di_count} ignore pattern(s).")
+            except Exception as e:
+                log_warning(f"Could not read .dockerignore: {e}")
+
+        # 3. Always include essentials: guarantee Dockerfile & .dockerignore ONLY when build_mode is remote
+        if build_mode == "remote":
+            df_base = os.path.basename(dockerfile_name).lower()
+            essential_files = ["dockerfile", "dockerfile.*", ".dockerignore"]
+            if df_base not in essential_files:
+                essential_files.append(df_base)
+            if found_dockerfile_path:
+                fdf_base = os.path.basename(found_dockerfile_path).lower()
+                if fdf_base not in essential_files:
+                    essential_files.append(fdf_base)
+
+    # When NOT building a Docker service remotely, Docker build files (Dockerfile, .dockerignore)
+    # are dev artifacts and should NOT be uploaded to the server (add them to ignore patterns)
+    if not (is_docker and build_mode == "remote"):
+        for df_pat in DOCKER_IGNORE_PATTERNS:
+            if df_pat not in ignore_list:
+                ignore_list.append(df_pat)
+
     # Non-Docker upload list
     upload_list = cfg.get("upload") or []
     if isinstance(upload_list, str):
@@ -1426,10 +1614,37 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
         if is_docker:
             print_separator("─", 50, Fore.MAGENTA)
             log_step(name, "DOCKER [DRY-RUN]", "Simulating Docker container deployment...")
-            d_dict = docker_cfg if isinstance(docker_cfg, dict) else {}
-            s_name = d_dict.get("service_name") or d_dict.get("service") or name
-            img = d_dict.get("image") or f"{name}:latest"
-            print(f"  {Fore.YELLOW}[DRY-RUN DOCKER]{Style.RESET_ALL} Service: {s_name} | Image: {img}")
+            df_label = f" | Dockerfile: {os.path.basename(found_dockerfile_path)}" if found_dockerfile_path else (f" | Dockerfile: {dockerfile_name}" if dockerfile_name != "Dockerfile" else "")
+            print(f"  {Fore.YELLOW}[DRY-RUN DOCKER]{Style.RESET_ALL} Service: {service_name} | Image: {image_name} | Build Mode: {build_mode.upper()}{df_label}")
+            if os.path.isfile(compose_path):
+                print(f"  {Fore.YELLOW}[DRY-RUN COMPOSE SYNC]{Style.RESET_ALL} {compose_rel} -> {remote_base}/docker-compose.yml")
+
+            if build_mode == "remote":
+                print(f"  {Fore.YELLOW}[DRY-RUN CONTEXT AUTO-SYNC]{Style.RESET_ALL} {context_dir} -> {remote_context_dest}")
+                if os.path.isdir(context_dir):
+                    match_count = 0
+                    for root, dirs, files in os.walk(context_dir):
+                        rel_d = os.path.relpath(root, context_dir).replace("\\", "/")
+                        dirs[:] = [d for d in dirs if not is_ignored(d, d if rel_d == "." else f"{rel_d}/{d}", docker_ignores, essential_files=essential_files)]
+                        for f in files:
+                            rel_f = f if rel_d == "." else f"{rel_d}/{f}"
+                            if not is_ignored(f, rel_f, docker_ignores, essential_files=essential_files):
+                                match_count += 1
+                    di_tag = f"auto-read {os.path.basename(found_dockerignore)}" if found_dockerignore else "no .dockerignore"
+                    mode_tag = "Archive packaging (tarball)" if ((use_archive or d_dict.get("archive") is not False) and proto == "ssh" and not (cli_archive is False)) else f"Multi-threaded ({threads} threads)"
+                    ess_list = [ef for ef in (essential_files or []) if not ef.endswith(".*")]
+                    ess_str = f", Essentials guaranteed: {', '.join(ess_list[:3])}" if ess_list else ""
+                    print(f"    {Fore.CYAN}ℹ️  {match_count} files queued for SFTP context sync [{mode_tag}, {di_tag}{ess_str}]{Style.RESET_ALL}")
+                print(f"  {Fore.YELLOW}[DRY-RUN VPS CMD]{Style.RESET_ALL} docker compose build {service_name}")
+                print(f"  {Fore.YELLOW}[DRY-RUN VPS CMD]{Style.RESET_ALL} docker compose up -d {service_name}")
+            else:
+                df_to_use = found_dockerfile_path or (os.path.join(context_dir, dockerfile_name) if dockerfile_name else None)
+                df_arg = f"-f {df_to_use} " if (df_to_use and os.path.basename(df_to_use).lower() != "dockerfile") else ""
+                print(f"  {Fore.YELLOW}[DRY-RUN LOCAL BUILD]{Style.RESET_ALL} docker build {df_arg}-t {image_name} {context_dir}")
+                print(f"  {Fore.YELLOW}[DRY-RUN LOCAL SAVE]{Style.RESET_ALL} docker save -o {service_name}.tar {image_name}")
+                print(f"  {Fore.YELLOW}[DRY-RUN SFTP UPLOAD]{Style.RESET_ALL} {service_name}.tar -> {remote_base}/{service_name}.tar")
+                print(f"  {Fore.YELLOW}[DRY-RUN VPS LOAD]{Style.RESET_ALL} docker load -i {remote_base}/{service_name}.tar")
+                print(f"  {Fore.YELLOW}[DRY-RUN VPS CMD]{Style.RESET_ALL} docker compose up -d {service_name}")
         else:
             print_separator("─", 50, Fore.MAGENTA)
             log_step(name, "UPLOAD [DRY-RUN]", "Simulating file uploads and target destinations...")
@@ -1530,21 +1745,14 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
                 log_warning("⚠️ Docker deployments require SSH for execution. Over FTP, container commands cannot run.")
 
             print_separator("─", 50, Fore.MAGENTA)
-            log_step(name, "DOCKER DEPLOY", "Deploying with Docker...")
-
-            d_dict = docker_cfg if isinstance(docker_cfg, dict) else {}
-            compose_rel = d_dict.get("compose_file") or "docker-compose.yml"
-            compose_path = os.path.join(project_root, compose_rel)
-            service_name = d_dict.get("service_name") or d_dict.get("service") or name
-            image_name = d_dict.get("image") or f"{name}:latest"
-            context_rel = d_dict.get("context") or rel_work_dir
-            context_dir = os.path.join(project_root, context_rel)
-            build_mode = d_dict.get("build_mode", "local").lower() # 'local' (tarball) or 'remote'
+            log_step(name, "DOCKER DEPLOY", f"Deploying service '{service_name}' ({build_mode.upper()} mode)...")
 
             # 4.1 Sync docker-compose.yml to VPS if present
             if os.path.isfile(compose_path):
                 log_info(f"Syncing docker-compose file: {compose_rel} -> {remote_base}/docker-compose.yml")
-                conn.upload_file(compose_path, f"{remote_base}/docker-compose.yml")
+                conn.upload_file(compose_path, f"{remote_base}/docker-compose.yml", overwrite=True)
+                if os.path.basename(compose_path) != "docker-compose.yml":
+                    conn.upload_file(compose_path, f"{remote_base}/{os.path.basename(compose_path)}", show_log=False, overwrite=True)
 
                 # Auto-detect and sync referenced env_file(s) from docker-compose.yml or config
                 compose_dir = os.path.dirname(compose_path) or project_root
@@ -1559,8 +1767,9 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
 
                 # Auto-parse from docker-compose.yml
                 try:
-                    with open(compose_path, "r", encoding="utf-8", errors="replace") as cf:
-                        compose_data = yaml.safe_load(cf) or {}
+                    if not compose_data and os.path.isfile(compose_path):
+                        with open(compose_path, "r", encoding="utf-8", errors="replace") as cf:
+                            compose_data = yaml.safe_load(cf) or {}
                     if isinstance(compose_data, dict):
                         services_dict = compose_data.get("services", {})
                         if isinstance(services_dict, dict):
@@ -1605,7 +1814,7 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
                     if found_local:
                         remote_env_dest = f"{remote_base}/{search_rel}".replace("\\", "/")
                         log_info(f"Syncing compose env file: {search_rel} -> {remote_env_dest}")
-                        conn.upload_file(found_local, remote_env_dest)
+                        conn.upload_file(found_local, remote_env_dest, overwrite=True)
                     else:
                         log_warning(f"Environment file '{ef}' referenced by docker-compose was not found locally.")
 
@@ -1616,14 +1825,20 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
                 remote_tar_path = f"{remote_base}/{tar_name}"
 
                 log_step(name, "DOCKER BUILD", f"Building image locally: {image_name}...")
-                dockerfile_arg = f"-f {d_dict['dockerfile']}" if d_dict.get("dockerfile") else ""
+                df_to_use = found_dockerfile_path or (os.path.join(context_dir, dockerfile_name) if dockerfile_name else None)
+                if df_to_use and os.path.isfile(df_to_use) and os.path.basename(df_to_use).lower() != "dockerfile":
+                    dockerfile_arg = f"-f {df_to_use}"
+                elif d_dict.get("dockerfile"):
+                    dockerfile_arg = f"-f {d_dict['dockerfile']}"
+                else:
+                    dockerfile_arg = ""
                 run_local_cmd(f"docker build {dockerfile_arg} -t {image_name} {context_dir}")
 
                 log_step(name, "DOCKER SAVE", f"Saving image to archive: {tar_name}...")
                 run_local_cmd(f"docker save -o {local_tar_path} {image_name}")
 
                 log_step(name, "SFTP UPLOAD", f"Uploading image archive to VPS...")
-                conn.upload_file(local_tar_path, remote_tar_path)
+                conn.upload_file(local_tar_path, remote_tar_path, overwrite=True)
 
                 if proto == "ssh":
                     log_step(name, "DOCKER LOAD", f"Loading image into Docker daemon on VPS...")
@@ -1636,8 +1851,65 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
                     log_info(f"Cleaned up local archive: {tar_name}")
 
             else: # 'remote' build mode
+                if not os.path.isdir(context_dir):
+                    log_error(f"Docker build context directory not found locally: '{context_dir}'")
+                    sys.exit(1)
+
+                # 4.2 Auto-sync Context Folder to VPS before remote build
+                print_separator("─", 50, Fore.MAGENTA)
+                log_step(name, "DOCKER CONTEXT SYNC", f"Auto-syncing context '{context_rel}' -> {remote_context_dest}...")
+                conn.mkdir_p(remote_context_dest)
+
+                use_tar_sync = (use_archive or d_dict.get("archive") is not False) and proto == "ssh" and not (cli_archive is False)
+                if use_tar_sync:
+                    log_info(f"Packaging and SFTP-syncing context archive: {context_dir} -> {remote_context_dest}")
+                    conn.upload_archive(
+                        context_dir,
+                        remote_context_dest,
+                        ignore_patterns=docker_ignores,
+                        retries=retries,
+                        overwrite=overwrite,
+                        essential_files=essential_files
+                    )
+                else:
+                    log_info(f"SFTP-syncing context directory ({threads} threads): {context_dir} -> {remote_context_dest}")
+                    conn.upload_directory(
+                        context_dir,
+                        remote_context_dest,
+                        ignore_patterns=docker_ignores,
+                        max_workers=threads,
+                        retries=retries,
+                        overwrite=overwrite,
+                        essential_files=essential_files
+                    )
+
+                # 4.3 Guarantee Dockerfile & .dockerignore are uploaded and present
+                # Overwrite remote Dockerfile with the selected dockerfile
+                if found_dockerfile_path and os.path.isfile(found_dockerfile_path):
+                    log_info(f"Syncing Dockerfile: {os.path.basename(found_dockerfile_path)} -> {remote_context_dest}/Dockerfile")
+                    conn.upload_file(found_dockerfile_path, f"{remote_context_dest}/Dockerfile", show_log=False, overwrite=True)
+                    if os.path.basename(found_dockerfile_path).lower() != "dockerfile":
+                        conn.upload_file(found_dockerfile_path, f"{remote_context_dest}/{os.path.basename(found_dockerfile_path)}", show_log=False, overwrite=True)
+                else:
+                    cand_df_paths = [
+                        os.path.join(context_dir, dockerfile_name),
+                        os.path.join(context_dir, "Dockerfile"),
+                        os.path.join(project_root, dockerfile_name),
+                        os.path.join(project_root, "Dockerfile")
+                    ]
+                    for cdf in cand_df_paths:
+                        if os.path.isfile(cdf):
+                            log_info(f"Syncing Dockerfile: {os.path.basename(cdf)} -> {remote_context_dest}/Dockerfile")
+                            conn.upload_file(cdf, f"{remote_context_dest}/Dockerfile", show_log=False, overwrite=True)
+                            if os.path.basename(cdf).lower() != "dockerfile":
+                                conn.upload_file(cdf, f"{remote_context_dest}/{os.path.basename(cdf)}", show_log=False, overwrite=True)
+                            break
+
+                if found_dockerignore and os.path.isfile(found_dockerignore):
+                    conn.upload_file(found_dockerignore, f"{remote_context_dest}/.dockerignore", show_log=False, overwrite=True)
+
                 if proto == "ssh":
-                    log_step(name, "DOCKER BUILD REMOTE", f"Building service {service_name} directly on VPS...")
+                    log_step(name, "DOCKER BUILD REMOTE", f"Building service '{service_name}' directly on VPS...")
                     conn.run_cmd(f"docker compose build {service_name}", cwd=remote_base)
 
             # Recreate container on VPS
@@ -1792,9 +2064,13 @@ services:
       compose_file: docker-compose.yml
       # env_file: .env.production # (Optional: auto-detected from docker-compose.yml!)
       service_name: backend
-      build_mode: local        # "local" (tarball upload) or "remote" (build on VPS)
+      build_mode: local        # "local" (build tarball & upload) or "remote" (auto-sync context & build on VPS)
       image: my-backend:latest
-      context: ./backend
+      context: ./backend       # Build context (auto-detected from docker-compose.yml if omitted)
+      # Note for 'build_mode: remote':
+      # - Context is automatically auto-detected, packaged, and SFTP-synced to ${remote_dir}/${context}
+      # - .dockerignore rules are auto-applied (essential Dockerfile & .dockerignore always included)
+      # - Runs 'docker compose build' and 'docker compose up -d' directly on the VPS
 
     # Run on VPS before docker starts:
     before_deploy:
@@ -1819,6 +2095,7 @@ services:
       - . -> ${remote_dir}/api
 
     # Files and folders to ignore when uploading:
+    # (Note: Dockerfile and .dockerignore are automatically ignored for non-docker services!)
     # (You can also put these into a .deployignore file!)
     ignore:
       - node_modules
