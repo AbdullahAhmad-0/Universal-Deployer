@@ -454,44 +454,188 @@ DOCKER_IGNORE_PATTERNS = [
     ".dockerignore"
 ]
 
-def is_ignored(name, rel_path, ignore_patterns, essential_files=None):
+def is_ignored(name, rel_path, ignore_patterns, essential_files=None, is_dir=False):
+    """
+    Evaluates whether a file or directory should be ignored based on:
+    - essential_files (never ignored, e.g. Dockerfile / .dockerignore in remote Docker build mode)
+    - ignore_patterns (from .dockerignore, .deployignore, deploy.yml, and DEFAULT_IGNORES)
+    Supports full Docker / Git ignore specifications:
+      - Globstar (**/pattern and pattern/**)
+      - Leading slash (/data for root-only anchor)
+      - Trailing slash (logs/ for directory-only match)
+      - Negations (!important.log)
+      - Parent directory match (if any parent folder is ignored, all child items are ignored)
+      - Case-insensitive matching on Windows and Linux
+    """
     norm_name = name.rstrip("/").rstrip("\\")
     norm_name_lower = norm_name.lower()
+    norm_rel = rel_path.replace("\\", "/").strip("/")
+    norm_rel_lower = norm_rel.lower()
 
-    # Essential files are never ignored (e.g. Dockerfile, .dockerignore in remote Docker build mode)
+    # 1. Essential files are never ignored (e.g. Dockerfile, .dockerignore in remote Docker build mode)
     if essential_files:
         for ef in essential_files:
             ef_clean = ef.lower().rstrip("/").rstrip("\\")
-            if norm_name_lower == ef_clean or fnmatch.fnmatch(norm_name_lower, ef_clean):
+            if (norm_name_lower == ef_clean or
+                norm_rel_lower == ef_clean or
+                fnmatch.fnmatch(norm_name_lower, ef_clean) or
+                fnmatch.fnmatch(norm_rel_lower, ef_clean)):
                 return False
 
     if not ignore_patterns:
         return False
-    norm_rel = rel_path.replace("\\", "/").strip("/")
-    norm_rel_lower = norm_rel.lower()
+
+    parts_lower = norm_rel_lower.split("/")
+    ignored = False
 
     for pat in ignore_patterns:
-        pat_clean = pat.strip().replace("\\", "/").rstrip("/")
-        if not pat_clean or pat_clean.startswith("#"):
+        raw_pat = str(pat).strip()
+        if not raw_pat or raw_pat.startswith("#"):
             continue
-        if pat_clean.startswith("./"):
-            pat_clean = pat_clean[2:]
-        pat_clean = pat_clean.lstrip("/")
-        pat_clean_lower = pat_clean.lower()
 
-        # Direct basename match (e.g., "node_modules", ".env.local", "*.pyc")
-        if fnmatch.fnmatch(norm_name, pat_clean) or fnmatch.fnmatch(norm_name_lower, pat_clean_lower):
-            return True
-        # Relative path match (e.g., "dist/*", "logs/*.log")
-        if fnmatch.fnmatch(norm_rel, pat_clean) or fnmatch.fnmatch(norm_rel, f"*/{pat_clean}"):
-            return True
-        if fnmatch.fnmatch(norm_rel_lower, pat_clean_lower) or fnmatch.fnmatch(norm_rel_lower, f"*/{pat_clean_lower}"):
-            return True
-        if fnmatch.fnmatch(norm_rel, f"{pat_clean}/*") or fnmatch.fnmatch(norm_rel, f"*/{pat_clean}/*"):
-            return True
-        if fnmatch.fnmatch(norm_rel_lower, f"{pat_clean_lower}/*") or fnmatch.fnmatch(norm_rel_lower, f"*/{pat_clean_lower}/*"):
-            return True
-    return False
+        is_negation = False
+        if raw_pat.startswith("!"):
+            is_negation = True
+            raw_pat = raw_pat[1:].strip()
+
+        if raw_pat.startswith("./"):
+            raw_pat = raw_pat[2:]
+
+        clean_pat = raw_pat.rstrip("/").replace("\\", "/")
+        clean_pat_lower = clean_pat.lower()
+
+        match = False
+
+        # Rule A: Globstar prefix '**/pattern'
+        if clean_pat.startswith("**/"):
+            sub_pat_lower = clean_pat_lower[3:]
+            if (fnmatch.fnmatch(norm_rel_lower, clean_pat_lower) or
+                fnmatch.fnmatch(norm_rel_lower, f"*/{clean_pat_lower}") or
+                fnmatch.fnmatch(norm_rel_lower, sub_pat_lower) or
+                fnmatch.fnmatch(norm_rel_lower, f"*/{sub_pat_lower}") or
+                fnmatch.fnmatch(norm_rel_lower, f"{sub_pat_lower}/*") or
+                fnmatch.fnmatch(norm_rel_lower, f"*/{sub_pat_lower}/*")):
+                match = True
+            if not match:
+                for part in parts_lower:
+                    if fnmatch.fnmatch(part, sub_pat_lower):
+                        match = True
+                        break
+
+        # Rule B: Globstar suffix 'pattern/**'
+        elif clean_pat.endswith("/**"):
+            prefix_lower = clean_pat_lower[:-3]
+            if (norm_rel_lower == prefix_lower or
+                norm_rel_lower.startswith(f"{prefix_lower}/") or
+                fnmatch.fnmatch(norm_rel_lower, clean_pat_lower) or
+                fnmatch.fnmatch(norm_rel_lower, f"*/{clean_pat_lower}")):
+                match = True
+            if not match:
+                for part in parts_lower:
+                    if fnmatch.fnmatch(part, prefix_lower):
+                        match = True
+                        break
+
+        # Rule C: Pattern without slash (e.g. 'node_modules', '*.log', '.env*')
+        elif "/" not in clean_pat:
+            if fnmatch.fnmatch(norm_name_lower, clean_pat_lower):
+                match = True
+            elif fnmatch.fnmatch(norm_rel_lower, clean_pat_lower) or fnmatch.fnmatch(norm_rel_lower, f"*/{clean_pat_lower}"):
+                match = True
+            elif fnmatch.fnmatch(norm_rel_lower, f"{clean_pat_lower}/*") or fnmatch.fnmatch(norm_rel_lower, f"*/{clean_pat_lower}/*"):
+                match = True
+            else:
+                for part in parts_lower:
+                    if fnmatch.fnmatch(part, clean_pat_lower):
+                        match = True
+                        break
+
+        # Rule D: Rooted pattern starting with '/' (e.g. '/data', '/dist')
+        elif clean_pat.startswith("/"):
+            root_pat = clean_pat_lower[1:]
+            if (norm_rel_lower == root_pat or
+                norm_rel_lower.startswith(f"{root_pat}/") or
+                fnmatch.fnmatch(norm_rel_lower, root_pat) or
+                fnmatch.fnmatch(norm_rel_lower, f"{root_pat}/*")):
+                match = True
+
+        # Rule E: General relative path pattern with slash (e.g. 'src/temp', 'logs/*.log')
+        else:
+            if (fnmatch.fnmatch(norm_rel_lower, clean_pat_lower) or
+                fnmatch.fnmatch(norm_rel_lower, f"{clean_pat_lower}/*") or
+                fnmatch.fnmatch(norm_rel_lower, f"*/{clean_pat_lower}") or
+                fnmatch.fnmatch(norm_rel_lower, f"*/{clean_pat_lower}/*")):
+                match = True
+
+        if match:
+            if is_negation:
+                ignored = False
+            else:
+                ignored = True
+
+    return ignored
+
+
+def collect_service_ignores(work_dir, project_root, context_dir=None, custom_ignores=None, include_dockerignore=False):
+    """
+    Collects ignore patterns from:
+    1. DEFAULT_IGNORES
+    2. Custom user ignores from deploy.yml
+    3. .deployignore in work_dir, context_dir, and project_root
+    4. .dockerignore ONLY when include_dockerignore=True (i.e. is_docker and build_mode == 'remote')
+    Automatically expands service-relative paths from project root ignore files.
+    """
+    patterns = list(DEFAULT_IGNORES)
+    if custom_ignores:
+        for ci in custom_ignores:
+            if ci and ci not in patterns:
+                patterns.append(ci)
+
+    search_dirs = []
+    for d in [context_dir, work_dir, project_root]:
+        if d and os.path.isdir(d) and d not in search_dirs:
+            search_dirs.append(d)
+
+    loaded_files = []
+    service_rel = ""
+    try:
+        service_rel = os.path.relpath(work_dir, project_root).replace("\\", "/").strip("/")
+        if service_rel == ".":
+            service_rel = ""
+    except Exception:
+        pass
+
+    target_filenames = [".deployignore"]
+    if include_dockerignore:
+        target_filenames.insert(0, ".dockerignore")
+
+    for s_dir in search_dirs:
+        for fname in target_filenames:
+            ign_path = os.path.join(s_dir, fname)
+            if os.path.isfile(ign_path) and ign_path not in loaded_files:
+                loaded_files.append(ign_path)
+                try:
+                    with open(ign_path, "r", encoding="utf-8", errors="replace") as f:
+                        file_count = 0
+                        for line in f:
+                            raw = line.strip()
+                            if raw and not raw.startswith("#"):
+                                clean = raw.replace("\\", "/")
+                                if clean not in patterns:
+                                    patterns.append(clean)
+                                    file_count += 1
+                                if s_dir == project_root and service_rel:
+                                    prefix = f"{service_rel}/"
+                                    if clean.lower().startswith(prefix.lower()):
+                                        stripped = clean[len(prefix):]
+                                        if stripped and stripped not in patterns:
+                                            patterns.append(stripped)
+                        rel_disp = os.path.relpath(ign_path, project_root).replace("\\", "/")
+                        log_info(f"Loaded {file_count} ignore rule(s) from: {rel_disp}")
+                except Exception as e:
+                    log_warning(f"Could not read {ign_path}: {e}")
+
+    return patterns, loaded_files
 
 
 # =============================================================================
@@ -1364,26 +1508,24 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
     overwrite_str = "Overwrite: ON" if overwrite else "Overwrite: OFF (Skip Existing)"
     log_info(f"Target Server: {Fore.WHITE}{user}@{host}:{port} ({proto.upper()}) | Remote Dir: {remote_base} | Mode: {mode_info} | {overwrite_str} (Retries: {retries})")
 
-    # Resolve ignore patterns early
-    ignore_list = list(DEFAULT_IGNORES)
+    clean_remote = (
+        cfg.get("clean_remote") is True
+        or cfg.get("empty_remote") is True
+        or (isinstance(cfg.get("docker"), dict) and cfg.get("docker", {}).get("clean_remote") is True)
+    )
+
+    # Resolve ignore patterns early (.deployignore, custom ignores)
+    # Note: .dockerignore is ONLY read when is_docker is True AND build_mode is 'remote'
     custom_ignores = cfg.get("ignore") or cfg.get("exclude") or []
     if isinstance(custom_ignores, str):
         custom_ignores = [custom_ignores]
-    ignore_list.extend(custom_ignores)
-
-    # Check for .deployignore in work_dir or project_root
-    for cand_dir in [work_dir, project_root]:
-        dep_ign = os.path.join(cand_dir, ".deployignore")
-        if os.path.isfile(dep_ign):
-            try:
-                with open(dep_ign, "r", encoding="utf-8", errors="replace") as dif:
-                    for line in dif:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            ignore_list.append(line)
-            except Exception:
-                pass
-            break
+    ignore_list, loaded_ignore_files = collect_service_ignores(
+        work_dir=work_dir,
+        project_root=project_root,
+        context_dir=None,
+        custom_ignores=custom_ignores,
+        include_dockerignore=False
+    )
 
     # Parse pre-deploy and post-deploy steps
     before_steps = normalize_steps(cfg.get("before_deploy") or cfg.get("pre_deploy") or cfg.get("before_run"))
@@ -1516,33 +1658,23 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
         else:
             remote_context_dest = f"{remote_base}/{clean_ctx}".replace("\\", "/")
 
-        # 2. Auto-read .dockerignore in context folder and project root
-        docker_ignores = list(DEFAULT_IGNORES)
-        if custom_ignores:
-            docker_ignores.extend(custom_ignores)
-
-        dockerignore_cands = [
-            os.path.join(context_dir, ".dockerignore"),
-            os.path.join(project_root, ".dockerignore"),
-            os.path.join(work_dir, ".dockerignore")
-        ]
-        for dip in dockerignore_cands:
-            if os.path.isfile(dip):
-                found_dockerignore = dip
-                break
-
-        if found_dockerignore:
-            try:
-                with open(found_dockerignore, "r", encoding="utf-8", errors="replace") as dif:
-                    di_count = 0
-                    for line in dif:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            docker_ignores.append(line)
-                            di_count += 1
-                    log_info(f"Auto-read .dockerignore ({os.path.basename(context_dir)}): loaded {di_count} ignore pattern(s).")
-            except Exception as e:
-                log_warning(f"Could not read .dockerignore: {e}")
+        # Resolve ignore rules for Docker:
+        # Note: .dockerignore is ONLY read and used when build_mode is 'remote'
+        if build_mode == "remote":
+            docker_ignores, _ = collect_service_ignores(
+                work_dir=work_dir,
+                project_root=project_root,
+                context_dir=context_dir,
+                custom_ignores=ignore_list,
+                include_dockerignore=True
+            )
+            # Find .dockerignore path for dry-run indicator tag
+            for dip in [os.path.join(context_dir, ".dockerignore"), os.path.join(work_dir, ".dockerignore"), os.path.join(project_root, ".dockerignore")]:
+                if os.path.isfile(dip):
+                    found_dockerignore = dip
+                    break
+        else:
+            docker_ignores = list(ignore_list)
 
         # 3. Always include essentials: guarantee Dockerfile & .dockerignore ONLY when build_mode is remote
         if build_mode == "remote":
@@ -1561,6 +1693,8 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
         for df_pat in DOCKER_IGNORE_PATTERNS:
             if df_pat not in ignore_list:
                 ignore_list.append(df_pat)
+            if df_pat not in docker_ignores:
+                docker_ignores.append(df_pat)
 
     # Non-Docker upload list
     upload_list = cfg.get("upload") or []
@@ -1859,6 +1993,10 @@ def deploy_service(name, cfg, project_root, dry_run=False, cli_threads=None, cli
                 print_separator("─", 50, Fore.MAGENTA)
                 log_step(name, "DOCKER CONTEXT SYNC", f"Auto-syncing context '{context_rel}' -> {remote_context_dest}...")
                 conn.mkdir_p(remote_context_dest)
+
+                if (clean_remote or d_dict.get("clean_remote") is True) and proto == "ssh":
+                    log_info(f"Emptying remote context before sync: {remote_context_dest}")
+                    conn.run_cmd(f"rm -rf '{remote_context_dest}'/* '{remote_context_dest}'/.[!.]* 2>/dev/null || true")
 
                 use_tar_sync = (use_archive or d_dict.get("archive") is not False) and proto == "ssh" and not (cli_archive is False)
                 if use_tar_sync:

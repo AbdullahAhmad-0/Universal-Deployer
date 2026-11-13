@@ -247,15 +247,16 @@ ignore:
 ```
 
 > [!TIP]
-> **Docker Files (`Dockerfile` & `.dockerignore`) Isolation**:
-> - **Remote Docker Builds (`build_mode: remote`)**: `Dockerfile` and `.dockerignore` are essential and **always uploaded** to the VPS context folder so `docker compose build` can run.
-> - **Non-Docker Services & Local Builds (`docker: false` or `build_mode: local`)**: `Dockerfile` and `.dockerignore` are **automatically ignored** and never uploaded to your remote server, keeping production web roots and static directories clean.
+> **Docker Files & `.dockerignore` Scope**:
+> - **Remote Docker Builds (`build_mode: remote`)**: `.dockerignore` rules are **automatically loaded and applied** to the context sync before building on the VPS! In addition, `Dockerfile` and `.dockerignore` are essential and **always uploaded** to the VPS context folder so `docker compose build` can run.
+> - **Non-Docker Services & Local Builds (`docker: false` or `build_mode: local`)**: `.dockerignore` is **not** loaded for these services (use `.deployignore` or `ignore:` in `deploy.yml`). Furthermore, `Dockerfile` and `.dockerignore` are **automatically ignored** and never uploaded to your remote server, keeping production web roots clean.
 
 > [!TIP]
 > **Fast Folder Pruning**: Ignored directories like `node_modules` or `.venv` are never traversed, ensuring fast uploads without scanning tens of thousands of unnecessary files.
 
-### 3. Using `.deployignore`
-You can also place a **`.deployignore`** file in your service directory or project root using standard `.gitignore` syntax. `uhdeploy` will detect and apply these rules automatically.
+### 3. Using `.deployignore` vs. `.dockerignore`
+- **`.deployignore`**: Use this file in your service or project root to exclude files for non-Docker services, direct folder uploads, or general deployments.
+- **`.dockerignore`**: Only active for Docker services with `build_mode: remote`. `uhdeploy` reads `.dockerignore` rules and applies full Dockerignore syntax (including `**/...`, `.../**`, and negations) to the context sync.
 
 ### 4. Overwrite Behavior vs. Skip Existing (`overwrite: false` / `--no-overwrite`) vs. `clean_remote`
 - **Default (Automatic Overwrite)**: You do not need to configure anything! `uhdeploy` automatically overwrites matching files on the destination server. Non-conflicting files on the server (like database files, user uploads, runtime logs) **remain untouched and safe**.
